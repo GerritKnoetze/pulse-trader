@@ -335,8 +335,28 @@ export class MigrationManager {
       const filepath = join(this.migrationsDir, file);
 
       try {
-        const fileUrl = pathToFileURL(filepath).href;
-        const module = await import(fileUrl);
+        // Import the TypeScript migration file
+        let module;
+        try {
+          // Try direct import (works with tsx CLI)
+          const fileUrl = pathToFileURL(filepath).href;
+          module = await import(fileUrl);
+        } catch (tsError: any) {
+          if (tsError.code === 'ERR_UNKNOWN_FILE_EXTENSION') {
+            // Fallback: use tsx programmatically for .ts files under Nitro runtime
+            const { register } = await import('tsx/esm/api');
+            const unregister = register();
+            try {
+              const fileUrl = pathToFileURL(filepath).href;
+              module = await import(fileUrl + '?t=' + Date.now());
+            } finally {
+              unregister();
+            }
+          } else {
+            throw tsError;
+          }
+        }
+
         const migration: Migration = module.default || module;
 
         if (!migration.up || !migration.down) {

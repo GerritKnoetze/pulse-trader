@@ -545,6 +545,88 @@
   padding-bottom: 0;
 }
 
+/* ── Inline param inputs (in the left Parameters panel) ─────── */
+.docs-param-input {
+  flex-shrink: 0;
+  width: 210px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.6rem;
+  color: var(--color-text);
+  font-size: 0.8rem;
+  font-family: monospace;
+  transition: border-color 0.15s;
+}
+
+.docs-param-input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.docs-param-select {
+  cursor: pointer;
+  color-scheme: dark;
+  appearance: auto;
+}
+
+/* Custom boolean dropdown */
+.docs-param-dropdown {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.docs-param-dropdown-btn {
+  width: 210px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+}
+
+.docs-param-dropdown-chevron {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.docs-param-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 200;
+  min-width: 210px;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0;
+  list-style: none;
+  margin: 0;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.docs-param-dropdown-menu li {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  font-family: monospace;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.docs-param-dropdown-menu li:hover {
+  background: var(--color-background-soft);
+}
+
+.docs-param-input.select-placeholder {
+  color: var(--color-text-soft);
+}
+
 .docs-response-desc {
   color: var(--color-text-soft);
   font-size: 0.95rem;
@@ -624,6 +706,39 @@
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+/* Object param grouping */
+.tester-param-object-group {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.tester-param-object-header {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tester-param-object-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.tester-param-subrow {
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.tester-param-subrow:last-child {
+  border-bottom: none;
+}
+
+.tester-subfield-indent {
+  opacity: 0.35;
+  font-size: 0.75rem;
 }
 
 .tester-param-label {

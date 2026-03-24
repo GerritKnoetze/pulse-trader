@@ -22,8 +22,6 @@ export class ConnectionManager {
       this.db = new Database(this.dbPath);
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
-
-      DatabaseLogger.logConnection('created', { path: this.dbPath });
     } catch (error) {
       DatabaseLogger.logError(error as Error, { operation: 'initialize_connection' });
       throw error;

@@ -8,6 +8,10 @@
   /* Colors — primary palette */
   --color-primary: #42b883;
   --color-primary-soft: rgba(66, 185, 131, 0.1);
+  --color-danger: #ff4d4f;
+  --color-danger-soft: rgba(255, 77, 79, 0.1);
+  --color-info: #49a9ee;
+  --color-info-soft: rgba(73, 169, 238, 0.1);
 
   /* Backgrounds */
   --color-background: #121212;
@@ -500,4 +504,621 @@ body {
   .app-sidebar {
     width: var(--sidebar-width-collapsed);
   }
+}
+
+/* ============================================================
+   Settings Page — SPA layout
+   ============================================================ */
+
+/* Settings page fills the main-content area naturally */
+.settings-page {
+  min-height: 100%;
+}
+
+/* Two-column layout: nav + content */
+.settings-layout {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+/* Left navigation — sticky within .main-content scroll */
+.settings-nav {
+  width: 220px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+}
+
+/* Save button under nav */
+.settings-save-btn {
+  width: 100%;
+  justify-content: center;
+  margin-top: 0.75rem;
+}
+
+.settings-search-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--color-text-soft);
+  flex-shrink: 0;
+}
+
+/* Search box inside left nav panel */
+.settings-search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 0.6rem 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.settings-search-input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+
+.settings-search-input::placeholder {
+  color: var(--color-text-soft);
+  opacity: 0.6;
+}
+
+.settings-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0.15rem;
+  cursor: pointer;
+  color: var(--color-text-soft);
+  border-radius: var(--radius-sm);
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.settings-search-clear:hover {
+  color: var(--color-text);
+  background: var(--color-background);
+}
+
+.settings-search-clear-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.settings-no-results {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--color-text-soft);
+  font-size: 0.95rem;
+}
+
+.settings-nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  background: var(--color-background-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  color: var(--color-text-soft);
+  font-size: 0.9rem;
+  transition: all var(--transition-speed) var(--transition-timing);
+  border-left: 3px solid transparent;
+}
+
+.settings-nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-text);
+}
+
+.settings-nav-item.active {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border-left-color: var(--color-primary);
+}
+
+.settings-nav-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+}
+
+/* Right content area — flows naturally, parent scrolls */
+.settings-content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Section wrapper produced by each component */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin-bottom: 2rem;
+}
+
+/* Individual setting cards */
+.settings-card {
+  background: var(--color-background-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.settings-card-header {
+  padding: 1.25rem 1.5rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-card-header h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.settings-card-description {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--color-text-soft);
+  margin-top: 0.2rem;
+}
+
+.settings-card-body {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Setting items (label + input rows) */
+.setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 0.6rem 0;
+}
+
+.setting-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+}
+
+.label-text {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.label-description {
+  font-size: 0.8rem;
+  color: var(--color-text-soft);
+}
+
+/* Input fields */
+.input-field,
+.select-field {
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  font-family: inherit;
+  padding: 0.55rem 0.75rem;
+  width: 50%;
+  min-width: 200px;
+  transition: border-color var(--transition-speed) var(--transition-timing);
+}
+
+.input-field:focus,
+.select-field:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.input-field:disabled,
+.select-field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.select-field {
+  cursor: pointer;
+  appearance: auto;
+}
+
+/* Checkboxes */
+.setting-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  width: 50%;
+  min-width: 200px;
+}
+
+.setting-checkbox > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.checkbox-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.checkbox-custom {
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-mute);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-speed) var(--transition-timing);
+}
+
+.checkbox-input:checked + .checkbox-custom {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.checkbox-input:checked + .checkbox-custom::after {
+  content: '';
+  width: 0.5rem;
+  height: 0.25rem;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg);
+  margin-top: -2px;
+}
+
+/* Sub-section title (e.g. "Live Account", "Paper Account") */
+.subsection-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  margin-top: 0.5rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* Broker selector cards */
+.broker-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.broker-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: var(--color-background-mute);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition-speed) var(--transition-timing);
+}
+
+.broker-card:hover:not(.disabled) {
+  border-color: var(--color-primary);
+}
+
+.broker-card.active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.broker-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.broker-icon {
+  width: 2rem;
+  height: 2rem;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.broker-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.broker-info {
+  flex: 1;
+}
+
+.broker-info h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.broker-info p {
+  font-size: 0.8rem;
+  color: var(--color-text-soft);
+  margin: 0.15rem 0 0;
+}
+
+.coming-soon-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 193, 7, 0.15);
+  color: #ffc107;
+  margin-top: 0.3rem;
+}
+
+.active-indicator {
+  flex-shrink: 0;
+}
+
+.check-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--color-primary);
+}
+
+/* Info banner */
+.info-banner {
+  background: rgba(66, 185, 131, 0.06);
+  border: 1px solid rgba(66, 185, 131, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+  font-size: 0.8rem;
+  color: var(--color-text-soft);
+  line-height: 1.6;
+}
+
+.info-banner a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.info-banner a:hover {
+  text-decoration: underline;
+}
+
+/* Action buttons */
+.settings-actions {
+  display: flex;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1.25rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  font-weight: 500;
+  font-family: inherit;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition-speed) var(--transition-timing);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn-secondary {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-background-soft);
+}
+
+.btn-success {
+  background: rgba(66, 185, 131, 0.12);
+  color: var(--color-primary);
+  border-color: rgba(66, 185, 131, 0.35);
+}
+.btn-success:hover:not(:disabled) {
+  background: rgba(66, 185, 131, 0.22);
+}
+
+.btn-danger {
+  background: rgba(255, 77, 79, 0.12);
+  color: var(--color-danger);
+  border-color: rgba(255, 77, 79, 0.35);
+}
+.btn-danger:hover:not(:disabled) {
+  background: rgba(255, 77, 79, 0.22);
+}
+
+.btn-warning {
+  background: rgba(229, 160, 13, 0.12);
+  color: #e5a00d;
+  border-color: rgba(229, 160, 13, 0.35);
+}
+.btn-warning:hover:not(:disabled) {
+  background: rgba(229, 160, 13, 0.22);
+}
+
+.btn-info {
+  background: var(--color-primary-soft);
+  color: #49a9ee;
+  border-color: rgba(73, 169, 238, 0.35);
+}
+.btn-info:hover:not(:disabled) {
+  background: rgba(73, 169, 238, 0.15);
+}
+
+/* Settings responsive */
+@media (max-width: 900px) {
+  .settings-layout {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: 100%;
+    position: static;
+  }
+
+  .settings-nav-list {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .settings-nav-item {
+    border-left: none;
+    border-bottom: 3px solid transparent;
+  }
+
+  .settings-nav-item.active {
+    border-bottom-color: var(--color-primary);
+  }
+
+  .setting-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .input-field,
+  .select-field {
+    min-width: 100%;
+  }
+}
+
+/* ==========  Toast Notifications  ========== */
+.toast-container {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.25rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-background-soft);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  pointer-events: auto;
+  min-width: 240px;
+  max-width: 380px;
+}
+
+.toast-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+}
+
+.toast-message {
+  flex: 1;
+  line-height: 1.35;
+}
+
+.toast-success {
+  background: rgba(66, 185, 131, 0.12);
+  border-color: rgba(66, 185, 131, 0.35);
+}
+.toast-success .toast-icon {
+  color: var(--color-primary);
+}
+
+.toast-error {
+  background: rgba(255, 77, 79, 0.12);
+  border-color: rgba(255, 77, 79, 0.35);
+}
+.toast-error .toast-icon {
+  color: var(--color-danger);
+}
+
+.toast-warning {
+  background: rgba(229, 160, 13, 0.12);
+  border-color: rgba(229, 160, 13, 0.35);
+}
+.toast-warning .toast-icon {
+  color: #e5a00d;
+}
+
+.toast-info {
+  background: rgba(73, 169, 238, 0.12);
+  border-color: rgba(73, 169, 238, 0.35);
+}
+.toast-info .toast-icon {
+  color: var(--color-info);
+}
+
+/* Transition */
+.toast-enter-active {
+  transition: all 0.3s ease;
+}
+.toast-leave-active {
+  transition: all 0.25s ease;
+}
+.toast-enter-from {
+  opacity: 0;
+  transform: translateX(1rem);
+}
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(1rem);
 }

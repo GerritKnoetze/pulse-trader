@@ -23,10 +23,12 @@ export abstract class BaseRepository {
       const stmt = db.prepare(query);
       return (parameters ? stmt.all(parameters) : stmt.all()) as T[];
     } catch (error) {
-      DatabaseLogger.logError(error as Error, {
-        operation: 'execute_query',
-        query: query.substring(0, 200),
-      });
+      if (!String((error as Error).message).includes('no such table')) {
+        DatabaseLogger.logError(error as Error, {
+          operation: 'execute_query',
+          query: query.substring(0, 200),
+        });
+      }
       throw error;
     }
   }
@@ -40,10 +42,12 @@ export abstract class BaseRepository {
       const stmt = db.prepare(query);
       return parameters ? stmt.run(parameters) : stmt.run();
     } catch (error) {
-      DatabaseLogger.logError(error as Error, {
-        operation: 'execute_run',
-        query: query.substring(0, 200),
-      });
+      if (!String((error as Error).message).includes('no such table')) {
+        DatabaseLogger.logError(error as Error, {
+          operation: 'execute_run',
+          query: query.substring(0, 200),
+        });
+      }
       throw error;
     }
   }

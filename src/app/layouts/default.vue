@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import AppHeader from '~/components/layout/AppHeader.vue'
 import AppSidebar from '~/components/layout/AppSidebar.vue'
 import AppFooter from '~/components/layout/AppFooter.vue'
+import ToastContainer from '~/components/common/ToastContainer.vue'
 
 const sidebarCollapsed = ref(true)
 const mainContentRef = ref<HTMLElement | null>(null)
@@ -41,5 +42,6 @@ const toggleSidebar = () => {
       <slot />
     </main>
     <AppFooter />
+    <ToastContainer />
   </div>
 </template>

@@ -8,12 +8,12 @@ const props = defineProps<{
   endpoint: EndpointDefinition
 }>()
 
-const paramValues = ref<Record<string, string>>({})
+const paramValues = inject<Ref<Record<string, string>>>('paramValues')!
 const response = ref<{ status: number; statusText: string; body: unknown; time: number } | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const activeTab = ref<'sample' | 'query'>('sample')
-const activeRequestTab = ref<'path' | 'query' | 'headers' | 'body' | 'json'>('headers')
+const activeRequestTab = ref<'path' | 'query' | 'headers' | 'json'>('headers')
 
 // Param groups — computed so the template stays clean
 const pathParams = computed(() => props.endpoint.params?.filter((p) => p.in === 'path') ?? [])
@@ -21,28 +21,19 @@ const queryParams = computed(() => props.endpoint.params?.filter((p) => p.in ===
 const headerParams = computed(() => props.endpoint.params?.filter((p) => p.in === 'header') ?? [])
 const bodyParams = computed(() => props.endpoint.params?.filter((p) => p.in === 'body') ?? [])
 
-// Pre-populate defaults whenever the endpoint changes
+// Reset state whenever the endpoint changes
 watch(
   () => props.endpoint,
-  (ep) => {
-    const initial: Record<string, string> = {}
-    for (const p of ep.params ?? []) {
-      if (p.type === 'boolean') {
-        initial[p.name] = ''  // always start at "— select —"
-      } else if (p.default) {
-        initial[p.name] = p.default
-      }
-    }
-    paramValues.value = initial
+  () => {
     response.value = null
     error.value = null
     activeTab.value = 'sample'
-    // Auto-select the most relevant request tab (Headers first, then Path → Query → Body)
+    // Auto-select the most relevant request tab
     activeRequestTab.value =
       headerParams.value.length ? 'headers'
       : pathParams.value.length ? 'path'
       : queryParams.value.length ? 'query'
-      : 'body'
+      : 'json'
   },
   { immediate: true },
 )
@@ -90,11 +81,7 @@ const curlCommand = computed(() => {
     })
     .join('')
 
-  const bodyParams = props.endpoint.params?.filter((p) => p.in === 'body') ?? []
-  const bodyObj: Record<string, string> = {}
-  for (const p of bodyParams) {
-    if (paramValues.value[p.name]) bodyObj[p.name] = paramValues.value[p.name]!
-  }
+  const bodyObj = buildBodyObject()
   const bodyArg = Object.keys(bodyObj).length
     ? ` -H "Content-Type: application/json" -d '${JSON.stringify(bodyObj)}'`
     : ''
@@ -118,13 +105,7 @@ const sendRequest = async () => {
       }
     }
 
-    const bodyParams = props.endpoint.params?.filter((p) => p.in === 'body') ?? []
-    const bodyObj: Record<string, unknown> = {}
-    for (const p of bodyParams) {
-      if (paramValues.value[p.name] !== undefined && paramValues.value[p.name] !== '') {
-        bodyObj[p.name] = coerceBodyValue(p, paramValues.value[p.name]!)
-      }
-    }
+    const bodyObj = buildBodyObject()
 
     const res = await $fetch.raw(requestPath.value, {
       method: props.endpoint.method as 'GET',
@@ -202,6 +183,25 @@ function coerceBodyValue(p: { type: string }, raw: string): unknown {
   return raw
 }
 
+// Build the outgoing body object, reconstructing nested objects from dot-notation keys
+function buildBodyObject(): Record<string, unknown> {
+  const obj: Record<string, unknown> = {}
+  for (const p of props.endpoint.params?.filter((p) => p.in === 'body') ?? []) {
+    if (p.type === 'object' && p.fields?.length) {
+      const nested: Record<string, unknown> = {}
+      for (const f of p.fields) {
+        const val = paramValues.value[`${p.name}.${f.name}`]
+        if (val !== undefined && val !== '') nested[f.name] = coerceBodyValue(f, val)
+      }
+      if (Object.keys(nested).length) obj[p.name] = nested
+    } else {
+      const val = paramValues.value[p.name]
+      if (val !== undefined && val !== '') obj[p.name] = coerceBodyValue(p, val)
+    }
+  }
+  return obj
+}
+
 // Live JSON preview of the outgoing request
 const requestJson = computed(() => {
   const headers: Record<string, string> = {}
@@ -211,12 +211,7 @@ const requestJson = computed(() => {
     }
   }
 
-  const body: Record<string, unknown> = {}
-  for (const p of props.endpoint.params?.filter((p) => p.in === 'body') ?? []) {
-    if (paramValues.value[p.name] !== undefined && paramValues.value[p.name] !== '') {
-      body[p.name] = coerceBodyValue(p, paramValues.value[p.name]!)
-    }
-  }
+  const body = buildBodyObject()
 
   return {
     method: props.endpoint.method,
@@ -277,15 +272,6 @@ const statusClass = computed(() => {
           <span class="tester-tab-badge">{{ queryParams.length }}</span>
         </button>
         <button
-          v-if="bodyParams.length"
-          class="tester-request-tab"
-          :class="{ active: activeRequestTab === 'body' }"
-          @click="activeRequestTab = 'body'"
-        >
-          Body
-          <span class="tester-tab-badge">{{ bodyParams.length }}</span>
-        </button>
-        <button
           class="tester-request-tab"
           :class="{ active: activeRequestTab === 'json' }"
           @click="activeRequestTab = 'json'"
@@ -340,47 +326,6 @@ const statusClass = computed(() => {
               :placeholder="param.example || param.default || param.type"
             />
           </div>
-        </div>
-      </div>
-
-      <!-- Body -->
-      <div v-if="activeRequestTab === 'body' && bodyParams.length" class="tester-params">
-        <div v-for="param in bodyParams" :key="param.name" class="tester-param-row">
-          <label class="tester-param-label">
-            {{ param.name }}
-            <span v-if="param.required" class="param-required">*</span>
-            <span class="param-in">{{ param.type }}</span>
-          </label>
-
-          <!-- Boolean — select -->
-          <select
-            v-if="param.type === 'boolean'"
-            v-model="paramValues[param.name]"
-            class="tester-param-input tester-param-select"
-            :class="{ 'select-placeholder': !paramValues[param.name] }"
-          >
-            <option value="" disabled hidden>— select —</option>
-            <option value="true">true</option>
-            <option value="false">false</option>
-          </select>
-
-          <!-- Number -->
-          <input
-            v-else-if="param.type === 'number' || param.type === 'integer'"
-            v-model="paramValues[param.name]"
-            type="number"
-            class="tester-param-input"
-            :placeholder="param.example || param.default || param.type"
-            step="any"
-          />
-
-          <!-- String / default -->
-          <input
-            v-else
-            v-model="paramValues[param.name]"
-            class="tester-param-input"
-            :placeholder="param.example || param.default || param.type"
-          />
         </div>
       </div>
 

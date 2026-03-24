@@ -1,6 +1,7 @@
 import type { EndpointDefinition } from '~/composables/useDocsRegistry'
 import { generalEndpoints } from './general'
 import { demoEndpoints } from './demo'
+import { settingsEndpoints } from './settings'
 
 // ─── Endpoint Registry ───────────────────────────────────────
 // To add a new category:
@@ -10,5 +11,6 @@ import { demoEndpoints } from './demo'
 
 export const endpoints: EndpointDefinition[] = [
   ...generalEndpoints,
+  ...settingsEndpoints,
   ...demoEndpoints,
 ]
