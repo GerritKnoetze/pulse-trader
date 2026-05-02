@@ -7,12 +7,14 @@ import {
   CurrencyDollarIcon,
   ChartBarIcon,
   ArrowsRightLeftIcon,
+  SparklesIcon,
 } from '@heroicons/vue/24/outline';
 import { useSettings } from '~/composables/useSettings';
 import { useToast } from '~/composables/useToast';
 import SettingsGeneral from '~/components/settings/SettingsGeneral.vue';
 import SettingsDataProvider from '~/components/settings/SettingsDataProvider.vue';
 import SettingsTradingBroker from '~/components/settings/SettingsTradingBroker.vue';
+import SettingsLlmProvider from '~/components/settings/SettingsLlmProvider.vue';
 
 useHead({ title: 'Settings — Pulse Trader' });
 
@@ -23,6 +25,7 @@ const toast = useToast();
 const generalRef = ref<InstanceType<typeof SettingsGeneral> | null>(null);
 const dataProviderRef = ref<InstanceType<typeof SettingsDataProvider> | null>(null);
 const tradingBrokerRef = ref<InstanceType<typeof SettingsTradingBroker> | null>(null);
+const llmProviderRef = ref<InstanceType<typeof SettingsLlmProvider> | null>(null);
 
 // ── Save all ────────────────────────────────────────────────
 const saving = ref(false);
@@ -34,6 +37,7 @@ async function saveAll() {
       ...generalRef.value?.getFormData(),
       ...dataProviderRef.value?.getFormData(),
       ...tradingBrokerRef.value?.getFormData(),
+      ...llmProviderRef.value?.getFormData(),
     };
     await saveSettings(payload);
     toast.success('All settings saved');
@@ -49,6 +53,7 @@ const sections = [
   { id: 'trading', label: 'Trading', icon: CurrencyDollarIcon },
   { id: 'data-provider', label: 'Data Provider', icon: ChartBarIcon },
   { id: 'trading-broker', label: 'Trading Broker', icon: ArrowsRightLeftIcon },
+  { id: 'llm-provider', label: 'AI / LLM', icon: SparklesIcon },
 ];
 
 // ── Search ──────────────────────────────────────────────────
@@ -59,6 +64,7 @@ const sectionKeywords: Record<string, string[]> = {
   trading: ['trading', 'trading preferences', 'local currency', 'position size', 'risk per trade', 'confirm trade'],
   'data-provider': ['data provider', 'massive', 'api key', 'api base url', 'websocket', 'market data', 'price feeds', 'quotes'],
   'trading-broker': ['trading broker', 'account broker', 'tradezero', 'live account', 'paper account', 'api key', 'api secret', 'orders', 'portfolio'],
+  'llm-provider': ['ai', 'llm', 'language model', 'github copilot', 'auto research', 'autoresearch', 'personal access token', 'pat', 'gpt', 'iterations'],
 };
 
 const filteredSections = computed(() => {
@@ -167,6 +173,7 @@ onBeforeUnmount(() => {
         <SettingsGeneral v-show="visibleSectionIds.has('trading')" ref="generalRef" />
         <SettingsDataProvider v-show="visibleSectionIds.has('data-provider')" ref="dataProviderRef" />
         <SettingsTradingBroker v-show="visibleSectionIds.has('trading-broker')" ref="tradingBrokerRef" />
+        <SettingsLlmProvider v-show="visibleSectionIds.has('llm-provider')" ref="llmProviderRef" />
         <div v-if="searchQuery && filteredSections.length === 0" class="settings-no-results">
           <p>No settings match "{{ searchQuery }}"</p>
         </div>

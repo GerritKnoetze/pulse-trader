@@ -54,7 +54,18 @@ export function isSensitiveKey(key: string): boolean {
 const SENSITIVE_JSON_SUBFIELDS: Record<string, string[]> = {
   'data-broker-details': ['apiKey'],
   'trading-broker-details': ['liveApiKeyId', 'liveApiKeySecret', 'paperApiKeyId', 'paperApiKeySecret'],
+  'llm-details': ['apiKey'],
 };
+
+/** Check if a value looks like it's already in our encrypted format (hex:hex:hex) */
+function isEncryptedFormat(value: string): boolean {
+  const parts = value.split(':');
+  if (parts.length !== 3) return false;
+  const [iv, tag, data] = parts as [string, string, string];
+  // IV is 16 bytes = 32 hex chars, tag is 16 bytes = 32 hex chars, data is non-empty hex
+  return iv.length === 32 && tag.length === 32 && data.length > 0
+    && /^[0-9a-f]+$/.test(iv) && /^[0-9a-f]+$/.test(tag) && /^[0-9a-f]+$/.test(data);
+}
 
 /** Encrypt only sensitive sub-fields in a JSON setting before storage */
 export function encryptJsonFields(key: string, obj: Record<string, unknown>): Record<string, unknown> {
@@ -63,6 +74,8 @@ export function encryptJsonFields(key: string, obj: Record<string, unknown>): Re
   const result = { ...obj };
   for (const field of fields) {
     if (typeof result[field] === 'string' && result[field]) {
+      // Skip fields that are already encrypted (preserved from DB during merge)
+      if (isEncryptedFormat(result[field] as string)) continue;
       result[field] = encrypt(result[field] as string);
     }
   }

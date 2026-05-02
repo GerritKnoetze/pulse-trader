@@ -912,6 +912,34 @@ body {
   text-decoration: underline;
 }
 
+/* Test connection */
+.test-connection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 0.5rem;
+}
+
+.test-connection .connection-ok {
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.test-connection .connection-fail {
+  font-size: 0.8125rem;
+  color: #e74c3c;
+  font-weight: 600;
+}
+
+.spinning {
+  animation: spin-icon 0.7s linear infinite;
+}
+
+@keyframes spin-icon {
+  to { transform: rotate(360deg); }
+}
+
 /* Action buttons */
 .settings-actions {
   display: flex;

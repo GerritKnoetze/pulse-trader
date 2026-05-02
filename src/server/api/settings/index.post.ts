@@ -14,10 +14,14 @@ const ALLOWED_KEYS = new Set([
   // Trading broker
   'active-trading-broker',
   'trading-broker-details',
+  // LLM / AI
+  'llm-provider',
+  'llm-details',
+  'auto-research-max-iterations',
 ]);
 
 /** Keys that store JSON with sensitive sub-fields requiring merge */
-const JSON_SETTINGS = new Set(['data-broker-details', 'trading-broker-details']);
+const JSON_SETTINGS = new Set(['data-broker-details', 'trading-broker-details', 'llm-details']);
 
 function detectType(value: unknown): SettingType {
   if (typeof value === 'boolean' || value === 'true' || value === 'false') return 'boolean';

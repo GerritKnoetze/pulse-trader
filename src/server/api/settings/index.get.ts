@@ -14,10 +14,14 @@ const SETTINGS_KEYS = [
   // Trading broker
   'active-trading-broker',
   'trading-broker-details',
+  // LLM / AI
+  'llm-provider',
+  'llm-details',
+  'auto-research-max-iterations',
 ];
 
 /** Keys that store JSON with sub-fields requiring masking */
-const JSON_SETTINGS = new Set(['data-broker-details', 'trading-broker-details']);
+const JSON_SETTINGS = new Set(['data-broker-details', 'trading-broker-details', 'llm-details']);
 
 export default defineEventHandler(async (event) => {
   try {

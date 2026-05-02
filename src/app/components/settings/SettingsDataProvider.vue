@@ -3,12 +3,18 @@ import { ref, reactive, onMounted } from 'vue';
 import {
   CheckCircleIcon,
   ChartBarIcon,
+  ArrowPathIcon,
 } from '@heroicons/vue/24/outline';
 import { useSettings } from '~/composables/useSettings';
+import { useMarketData } from '~/composables/useMarketData';
 import { useToast } from '~/composables/useToast';
 
 const { getSettings } = useSettings();
+const { validateConnection } = useMarketData();
 const toast = useToast();
+
+const testingConnection = ref(false);
+const connectionStatus = ref<'idle' | 'success' | 'error'>('idle');
 
 const dataBrokers = [
   {
@@ -61,6 +67,26 @@ function getFormData(): Record<string, unknown> {
 }
 
 defineExpose({ getFormData });
+
+async function testConnection() {
+  testingConnection.value = true;
+  connectionStatus.value = 'idle';
+  try {
+    const res = await validateConnection();
+    if (res.valid) {
+      connectionStatus.value = 'success';
+      toast.success('Connection successful');
+    } else {
+      connectionStatus.value = 'error';
+      toast.error('Connection failed — check your API key');
+    }
+  } catch {
+    connectionStatus.value = 'error';
+    toast.error('Connection test failed');
+  } finally {
+    testingConnection.value = false;
+  }
+}
 
 onMounted(load);
 </script>
@@ -149,6 +175,19 @@ onMounted(load);
         <div class="info-banner">
           <p><strong>Note:</strong> Free/Starter plans use delayed data (15-min delay) with wss://delayed.massive.com. Real-time WebSocket (wss://socket.massive.com) requires Advanced/Business plan.</p>
           <p>Get your API key at <a href="https://massive.com/pricing" target="_blank" rel="noopener">massive.com/pricing</a></p>
+        </div>
+
+        <div class="test-connection">
+          <button
+            class="btn btn-primary"
+            :disabled="testingConnection"
+            @click="testConnection"
+          >
+            <ArrowPathIcon class="btn-icon" :class="{ spinning: testingConnection }" />
+            {{ testingConnection ? 'Testing...' : 'Test Connection' }}
+          </button>
+          <span v-if="connectionStatus === 'success'" class="connection-ok">✓ Connected</span>
+          <span v-if="connectionStatus === 'error'" class="connection-fail">✗ Failed</span>
         </div>
       </div>
     </div>
