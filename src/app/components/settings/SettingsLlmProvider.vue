@@ -31,7 +31,6 @@ const llmSettings = reactive({
   apiUrl: 'https://models.inference.ai.azure.com',
 });
 
-const maxIterations = ref(5);
 const testing = ref(false);
 const testResult = ref<{ success: boolean; response?: string; latencyMs?: number; error?: string } | null>(null);
 
@@ -171,9 +170,6 @@ async function load() {
   try {
     const data = await getSettings();
     if (data['llm-provider']) activeLlmProvider.value = data['llm-provider'] as string;
-    if (data['auto-research-max-iterations']) {
-      maxIterations.value = Number(data['auto-research-max-iterations']) || 5;
-    }
     const details = data['llm-details'] as Record<string, string> | null;
     if (details) {
       llmSettings.apiKey = details.apiKey || '';
@@ -219,7 +215,6 @@ function getFormData(): Record<string, unknown> {
       model,
       apiUrl: llmSettings.apiUrl,
     },
-    'auto-research-max-iterations': maxIterations.value,
   };
 }
 
@@ -236,7 +231,7 @@ onMounted(async () => {
     <div id="llm-provider" class="settings-card">
       <div class="settings-card-header">
         <h3>AI / LLM Provider</h3>
-        <span class="settings-card-description">Language model used for AutoResearch — AI-driven hypothesis generation, analysis, and strategy refinement</span>
+        <span class="settings-card-description">Language model used for AI-driven analysis and strategy refinement</span>
       </div>
       <div class="settings-card-body">
         <div class="broker-selector">
@@ -355,29 +350,6 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- AutoResearch Settings -->
-    <div id="auto-research-config" class="settings-card">
-      <div class="settings-card-header">
-        <h3>AutoResearch</h3>
-        <span class="settings-card-description">Configure the AI-driven iterative research loop</span>
-      </div>
-      <div class="settings-card-body">
-        <div class="setting-item">
-          <label class="setting-label">
-            <span class="label-text">Max Iterations</span>
-            <span class="label-description">Maximum number of hypothesis → backtest → refine cycles per auto-run (1–20)</span>
-          </label>
-          <input
-            v-model.number="maxIterations"
-            type="number"
-            class="input-field"
-            min="1"
-            max="20"
-            placeholder="5"
-          />
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 

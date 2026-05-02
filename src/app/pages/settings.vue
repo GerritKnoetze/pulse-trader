@@ -64,7 +64,7 @@ const sectionKeywords: Record<string, string[]> = {
   trading: ['trading', 'trading preferences', 'local currency', 'position size', 'risk per trade', 'confirm trade'],
   'data-provider': ['data provider', 'massive', 'api key', 'api base url', 'websocket', 'market data', 'price feeds', 'quotes'],
   'trading-broker': ['trading broker', 'account broker', 'tradezero', 'live account', 'paper account', 'api key', 'api secret', 'orders', 'portfolio'],
-  'llm-provider': ['ai', 'llm', 'language model', 'github copilot', 'auto research', 'autoresearch', 'personal access token', 'pat', 'gpt', 'iterations'],
+  'llm-provider': ['ai', 'llm', 'language model', 'github copilot', 'personal access token', 'pat', 'gpt'],
 };
 
 const filteredSections = computed(() => {

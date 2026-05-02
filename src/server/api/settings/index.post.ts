@@ -17,7 +17,6 @@ const ALLOWED_KEYS = new Set([
   // LLM / AI
   'llm-provider',
   'llm-details',
-  'auto-research-max-iterations',
 ]);
 
 /** Keys that store JSON with sensitive sub-fields requiring merge */

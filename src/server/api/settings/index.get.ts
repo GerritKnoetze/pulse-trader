@@ -17,7 +17,6 @@ const SETTINGS_KEYS = [
   // LLM / AI
   'llm-provider',
   'llm-details',
-  'auto-research-max-iterations',
 ];
 
 /** Keys that store JSON with sub-fields requiring masking */

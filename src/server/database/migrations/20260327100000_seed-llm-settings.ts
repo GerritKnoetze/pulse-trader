@@ -4,7 +4,7 @@ import type { Migration } from '../migration-manager';
 /**
  * Migration: seed-llm-settings
  * Version: 20260327100000
- * Description: Seed default LLM / AI settings for AutoResearch
+ * Description: Seed default LLM / AI settings
  * Created: 2026-03-27T10:00:00.000Z
  */
 
@@ -25,7 +25,6 @@ const defaults: SeedSetting[] = [
     }),
     type: 'json',
   },
-  { key: 'auto-research-max-iterations', value: '5', type: 'number' },
 ];
 
 const migration: Migration = {
