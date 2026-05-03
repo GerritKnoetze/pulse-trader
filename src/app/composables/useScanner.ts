@@ -1,4 +1,4 @@
-import { ref, computed, readonly, watch } from 'vue'
+import { ref, computed } from 'vue'
 import type { ScannerRow, ScannerTimeframe, ScannerMode, SortDirection, QuickFilter } from '~/types/scanner'
 
 // ── Mock data (from "The Strat" scanner reference) ─────────
@@ -53,6 +53,7 @@ interface ScannerPersistedState {
 }
 
 function loadScannerState(): Partial<ScannerPersistedState> {
+  if (typeof window === 'undefined') return {}
   try {
     const raw = localStorage.getItem(SCANNER_STATE_KEY)
     return raw ? (JSON.parse(raw) as ScannerPersistedState) : {}
@@ -61,14 +62,14 @@ function loadScannerState(): Partial<ScannerPersistedState> {
   }
 }
 
-const _ps = loadScannerState()
-const timeframe = ref<ScannerTimeframe>(_ps.timeframe ?? 'D')
-const mode = ref<ScannerMode>(_ps.mode ?? 'signal')
-const activeQuickFilter = ref<string | null>(_ps.activeQuickFilter ?? null)
-const sortKey = ref<keyof ScannerRow | null>(_ps.sortKey ?? null)
-const sortDir = ref<SortDirection>(_ps.sortDir ?? null)
+const timeframe = ref<ScannerTimeframe>('D')
+const mode = ref<ScannerMode>('signal')
+const activeQuickFilter = ref<string | null>(null)
+const sortKey = ref<keyof ScannerRow | null>(null)
+const sortDir = ref<SortDirection>(null)
 
 function persistScannerState() {
+  if (typeof window === 'undefined') return
   const state: ScannerPersistedState = {
     timeframe: timeframe.value,
     mode: mode.value,
@@ -79,7 +80,15 @@ function persistScannerState() {
   localStorage.setItem(SCANNER_STATE_KEY, JSON.stringify(state))
 }
 
-watch([timeframe, mode, activeQuickFilter, sortKey, sortDir], persistScannerState)
+function initScanner() {
+  const ps = loadScannerState()
+  timeframe.value = ps.timeframe ?? 'D'
+  mode.value = ps.mode ?? 'signal'
+  activeQuickFilter.value = ps.activeQuickFilter ?? null
+  sortKey.value = ps.sortKey ?? null
+  sortDir.value = ps.sortDir ?? null
+}
+
 
 // ── Computed ────────────────────────────────────────────────
 const filteredRows = computed<ScannerRow[]>(() => {
@@ -122,18 +131,22 @@ const showingCount = computed(() => filteredRows.value.length)
 // ── Actions ─────────────────────────────────────────────────
 function setTimeframe(tf: ScannerTimeframe) {
   timeframe.value = tf
+  persistScannerState()
 }
 
 function setMode(m: ScannerMode) {
   mode.value = m
+  persistScannerState()
 }
 
 function toggleQuickFilter(filterId: string) {
   activeQuickFilter.value = activeQuickFilter.value === filterId ? null : filterId
+  persistScannerState()
 }
 
 function clearFilters() {
   activeQuickFilter.value = null
+  persistScannerState()
 }
 
 function setSortBy(key: keyof ScannerRow) {
@@ -145,16 +158,17 @@ function setSortBy(key: keyof ScannerRow) {
     sortKey.value = key
     sortDir.value = 'asc'
   }
+  persistScannerState()
 }
 
 export function useScanner() {
   return {
     // State
-    timeframe: readonly(timeframe),
-    mode: readonly(mode),
-    activeQuickFilter: readonly(activeQuickFilter),
-    sortKey: readonly(sortKey),
-    sortDir: readonly(sortDir),
+    timeframe,
+    mode,
+    activeQuickFilter,
+    sortKey,
+    sortDir,
     // Computed
     filteredRows,
     totalCount,
@@ -169,5 +183,7 @@ export function useScanner() {
     setSortBy,
     // Constants
     QUICK_FILTERS,
+    // Init
+    initScanner,
   }
 }

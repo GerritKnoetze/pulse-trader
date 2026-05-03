@@ -6,7 +6,7 @@ import { useGridFilters } from '~/composables/useGridFilters'
 import { useGridLayouts } from '~/composables/useGridLayouts'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 
-const { clearFilters } = useScanner()
+const { clearFilters, initScanner } = useScanner()
 const { initColumns, resetColumns } = useGridColumns()
 const { initFilters, resetFilters, closeFilterDropdown } = useGridFilters()
 const { initLayouts } = useGridLayouts()
@@ -28,6 +28,7 @@ function onDocClick() { closeFilterDropdown() }
 
 onMounted(() => {
   document.addEventListener('click', onDocClick)
+  initScanner()
   initColumns()
   initFilters()
   initLayouts()

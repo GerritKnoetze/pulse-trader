@@ -5,7 +5,7 @@ import ScannerToolbar from '~/components/scanner/ScannerToolbar.vue'
 import ScannerGrid from '~/components/scanner/ScannerGrid.vue'
 import { useChartTabs } from '~/composables/useChartTabs'
 
-definePageMeta({ layout: 'scanner' })
+definePageMeta({ layout: 'scanner', ssr: false })
 useHead({ title: 'Scanner — Pulse Trader' })
 
 const { activeTab, tabs } = useChartTabs()
