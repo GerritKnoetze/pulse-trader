@@ -39,4 +39,10 @@ export default defineNuxtConfig({
   devServer: {
     port: 4000,
   },
+
+  vite: {
+    optimizeDeps: {
+      include: ['lightweight-charts'],
+    },
+  },
 })

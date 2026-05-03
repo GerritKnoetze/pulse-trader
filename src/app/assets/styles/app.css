@@ -101,6 +101,12 @@ body {
   margin-left: var(--sidebar-width-collapsed);
 }
 
+/* Scanner layout — no padding, grid handles its own scroll */
+.main-content.scanner-layout {
+  padding: 0;
+  overflow: hidden;
+}
+
 /* ── Header ───────────────────────────────────────────────── */
 .app-header {
   height: var(--header-height);

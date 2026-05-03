@@ -30,6 +30,9 @@ const supportOpen = ref(false)
         <NuxtLink to="/" class="nav-button">
           Dashboard
         </NuxtLink>
+        <NuxtLink to="/scanner" class="nav-button">
+          Scanner
+        </NuxtLink>
 
         <div class="nav-dropdown" :class="{ open: supportOpen }" @mouseenter="supportOpen = true" @mouseleave="supportOpen = false">
           <button class="nav-button nav-dropdown-trigger">
