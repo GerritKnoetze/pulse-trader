@@ -459,4 +459,65 @@ function selectPreset(id: string) {
 .btn-chevron.rotated {
   transform: rotate(180deg);
 }
+
+/* Criteria button */
+.criteria-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-soft);
+  font-size: 0.82rem;
+  padding: 0.28rem 0.65rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  position: relative;
+  white-space: nowrap;
+}
+.criteria-btn:hover { color: var(--color-text); border-color: #555; }
+
+.criteria-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #c87628;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+/* Scan button */
+.scan-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #c87628;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.scan-btn:hover:not(:disabled) { background: #d98a3a; }
+.scan-btn:disabled { opacity: 0.6; cursor: default; }
+
+.scan-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: toolbar-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes toolbar-spin { to { transform: rotate(360deg); } }
 </style>

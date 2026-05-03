@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue'
 import {
   FunnelIcon,
 } from '@heroicons/vue/24/outline'
@@ -13,8 +14,26 @@ import type { ColDef } from '~/composables/useGridColumns'
 const MTF_TFS = ['15', '30', '60', 'D', 'W', 'Q', 'Y'] as const
 type MtfTf = typeof MTF_TFS[number]
 
-const { sortKey, sortDir, setSortBy } = useScanner()
+const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor } = useScanner()
 const { openTab } = useChartTabs()
+
+// ── Infinite scroll ─────────────────────────────────────────
+const sentinelEl = ref<HTMLTableRowElement | null>(null)
+let observer: IntersectionObserver | null = null
+
+onMounted(() => {
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries[0]?.isIntersecting && nextCursor.value && !isLoadingMore.value) {
+        loadMore()
+      }
+    },
+    { rootMargin: '200px' },
+  )
+  if (sentinelEl.value) observer.observe(sentinelEl.value)
+})
+
+onUnmounted(() => { observer?.disconnect() })
 
 const {
   orderedColumns,
@@ -187,6 +206,14 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
           </td>
         </tr>
       </tbody>
+      <!-- Infinite scroll sentinel -->
+      <tfoot>
+        <tr ref="sentinelEl">
+          <td :colspan="orderedColumns.length" class="sentinel-cell">
+            <span v-if="isLoadingMore" class="load-more-spinner">Loading…</span>
+          </td>
+        </tr>
+      </tfoot>
     </table>
   </div>
 </template>
@@ -466,4 +493,21 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.14);
 }
+
+/* ── Infinite scroll sentinel ───────────────────────────────── */
+.sentinel-cell {
+  height: 1px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: center;
+}
+.load-more-spinner {
+  display: inline-block;
+  padding: 0.5rem;
+  font-size: 0.78rem;
+  color: #666;
+  animation: pulse-text 1s ease-in-out infinite;
+}
+@keyframes pulse-text { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>

@@ -3,19 +3,37 @@ import {
   ViewColumnsIcon,
   CircleStackIcon,
   FunnelIcon,
+  AdjustmentsHorizontalIcon,
 } from '@heroicons/vue/24/outline'
+import { useScanCriteria } from '~/composables/useScanCriteria'
 
 const props = defineProps<{
-  activePanel: 'columns' | 'layouts' | 'my-filters' | null
+  activePanel: 'columns' | 'layouts' | 'my-filters' | 'criteria' | null
 }>()
 
-defineEmits<{
-  togglePanel: ['columns' | 'layouts' | 'my-filters']
+const emit = defineEmits<{
+  togglePanel: ['columns' | 'layouts' | 'my-filters' | 'criteria']
 }>()
+
+const { activeCount: criteriaCount } = useScanCriteria()
 </script>
 
 <template>
   <div class="scanner-side-strip">
+    <!-- Criteria -->
+    <button
+      class="side-strip-btn"
+      :class="{ active: props.activePanel === 'criteria' }"
+      title="Scan Criteria"
+      @click="$emit('togglePanel', 'criteria')"
+    >
+      <AdjustmentsHorizontalIcon class="strip-icon" />
+      <span class="strip-label">
+        Criteria
+        <span v-if="criteriaCount > 0" class="strip-badge">{{ criteriaCount }}</span>
+      </span>
+    </button>
+    <!-- Columns -->
     <button
       class="side-strip-btn"
       :class="{ active: props.activePanel === 'columns' }"
@@ -25,6 +43,7 @@ defineEmits<{
       <ViewColumnsIcon class="strip-icon" />
       <span class="strip-label">Columns</span>
     </button>
+    <!-- Layouts -->
     <button
       class="side-strip-btn"
       :class="{ active: props.activePanel === 'layouts' }"
@@ -34,6 +53,7 @@ defineEmits<{
       <CircleStackIcon class="strip-icon" />
       <span class="strip-label">Layouts</span>
     </button>
+    <!-- My Filters -->
     <button
       class="side-strip-btn"
       :class="{ active: props.activePanel === 'my-filters' }"
@@ -94,5 +114,24 @@ defineEmits<{
   letter-spacing: 0.04em;
   white-space: nowrap;
   writing-mode: vertical-lr;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.strip-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  background: #c87628;
+  color: #fff;
+  font-size: 0.58rem;
+  font-weight: 700;
+  border-radius: 7px;
+  padding: 0 3px;
+  writing-mode: horizontal-tb;
+  line-height: 1;
 }
 </style>

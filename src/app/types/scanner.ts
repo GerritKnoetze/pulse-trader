@@ -4,6 +4,16 @@ export type ScannerCategory = 'Continuation' | 'Continuation+' | 'Inside' | 'Rev
 export type MtfSignal = 'up' | 'down'
 export interface MtfState { '15': MtfSignal; '30': MtfSignal; '60': MtfSignal; 'D': MtfSignal; 'W': MtfSignal; 'Q': MtfSignal; 'Y': MtfSignal }
 
+/** Scan criteria sent to the server to filter the full-market snapshot */
+export interface ScanCriteria {
+  minPrice?:          number | undefined
+  maxPrice?:          number | undefined
+  minChangePercent?:  number | undefined
+  maxChangePercent?:  number | undefined
+  minVolume?:         number | undefined
+  minRvol?:           number | undefined
+}
+
 export interface ScannerRow {
   id: string
   symbol: string

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import ScannerTabBar from '~/components/scanner/ScannerTabBar.vue'
-import ScannerToolbar from '~/components/scanner/ScannerToolbar.vue'
 import ScannerGrid from '~/components/scanner/ScannerGrid.vue'
 import { useChartTabs } from '~/composables/useChartTabs'
 
@@ -18,7 +17,6 @@ const activeTabData = computed(() => tabs.value.find(t => t.symbol === activeTab
 
     <!-- Scan view -->
     <template v-if="activeTab === 'scan'">
-      <ScannerToolbar />
       <ScannerGrid />
     </template>
 

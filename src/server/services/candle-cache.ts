@@ -1,0 +1,65 @@
+import type { BarInput } from '../database/repositories/market-data-repository'
+
+// Per-timespan cache TTL
+const TTL_MS: Record<string, number> = {
+  minute:  1 * 60_000,
+  hour:   60 * 60_000,
+  day:    24 * 60 * 60_000,
+  week:   24 * 60 * 60_000,
+  month:  24 * 60 * 60_000,
+}
+
+const MAX_ENTRIES = 2000
+
+interface Entry {
+  bars: BarInput[]
+  expiresAt: number
+}
+
+class CandleCache {
+  private store = new Map<string, Entry>()
+
+  get(ticker: string, timespan: string): BarInput[] | null {
+    const key = `${ticker}:${timespan}`
+    const entry = this.store.get(key)
+    if (!entry) return null
+    if (Date.now() > entry.expiresAt) { this.store.delete(key); return null }
+    return entry.bars
+  }
+
+  set(ticker: string, timespan: string, bars: BarInput[]): void {
+    if (this.store.size >= MAX_ENTRIES) this.evict()
+    const ttl = TTL_MS[timespan] ?? 60 * 60_000
+    this.store.set(`${ticker}:${timespan}`, { bars, expiresAt: Date.now() + ttl })
+  }
+
+  invalidate(ticker: string, timespan?: string): void {
+    if (timespan) {
+      this.store.delete(`${ticker}:${timespan}`)
+    } else {
+      for (const k of this.store.keys()) {
+        if (k.startsWith(`${ticker}:`)) this.store.delete(k)
+      }
+    }
+  }
+
+  get size(): number { return this.store.size }
+
+  private evict(): void {
+    const now = Date.now()
+    for (const [k, e] of this.store) {
+      if (e.expiresAt < now) this.store.delete(k)
+    }
+    if (this.store.size >= MAX_ENTRIES) {
+      const sorted = [...this.store.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+      sorted.slice(0, 200).forEach(([k]) => this.store.delete(k))
+    }
+  }
+}
+
+declare global { var __candleCache: CandleCache | undefined }
+
+export function getCandleCache(): CandleCache {
+  if (!globalThis.__candleCache) globalThis.__candleCache = new CandleCache()
+  return globalThis.__candleCache
+}

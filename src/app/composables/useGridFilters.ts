@@ -45,7 +45,7 @@ export function useGridFilters() {
 
   function getUniqueValues(key: keyof ScannerRow): string[] {
     const vals = new Set<string>()
-    for (const row of allRows) {
+    for (const row of allRows.value) {
       vals.add(cellDisplayValue(key, row))
     }
     return [...vals].sort((a, b) => {

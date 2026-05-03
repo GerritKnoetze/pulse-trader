@@ -18,6 +18,7 @@
     "migrate:list": "npx tsx src/server/scripts/migrate.ts list",
     "migrate:create": "npx tsx src/server/scripts/migrate.ts create",
     "migrate:validate": "npx tsx src/server/scripts/migrate.ts validate",
+    "favicons": "node scripts/generate-favicons.mjs",
     "migrate:reset": "npx tsx src/server/scripts/migrate.ts reset"
   },
   "dependencies": {
@@ -32,6 +33,8 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5",
     "tsx": "^4.21.0"
   }
 }

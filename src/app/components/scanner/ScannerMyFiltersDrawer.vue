@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { TrashIcon } from '@heroicons/vue/24/outline'
+import { TrashIcon, FunnelIcon } from '@heroicons/vue/24/outline'
 import { useScanner, QUICK_FILTERS } from '~/composables/useScanner'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 import { useGridFilters } from '~/composables/useGridFilters'
@@ -44,7 +44,10 @@ const hasAnyActiveFilter = computed(() =>
 <template>
   <div class="side-drawer" :class="{ open }">
     <div class="drawer-header">
-      <span class="drawer-title">My Filters</span>
+      <div class="drawer-header-left">
+        <FunnelIcon class="drawer-header-icon" />
+        <span class="drawer-title">My Filters</span>
+      </div>
       <button class="drawer-close-btn" @click="$emit('close')">✕</button>
     </div>
 
@@ -179,6 +182,19 @@ const hasAnyActiveFilter = computed(() =>
 
 .drawer-close-btn:hover { color: #ccc; }
 
+.drawer-header-icon {
+  width: 14px;
+  height: 14px;
+  color: #c87628;
+  flex-shrink: 0;
+}
+
+.drawer-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .drawer-section {
   padding: 0.65rem 0.75rem;
   flex-shrink: 0;
@@ -227,9 +243,9 @@ const hasAnyActiveFilter = computed(() =>
 }
 
 .active-tag-quick {
-  background: rgba(66, 184, 131, 0.12);
-  border-color: rgba(66, 184, 131, 0.3);
-  color: #42b883;
+  background: rgba(200, 118, 40, 0.12);
+  border-color: rgba(200, 118, 40, 0.3);
+  color: #c87628;
 }
 
 .active-tag-count {

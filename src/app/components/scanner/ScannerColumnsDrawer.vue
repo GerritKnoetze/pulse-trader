@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ViewColumnsIcon } from '@heroicons/vue/24/outline'
 import { useGridColumns } from '~/composables/useGridColumns'
 
 defineProps<{ open: boolean }>()
@@ -10,7 +11,10 @@ const { COLUMNS, hiddenCols, toggleColVisibility } = useGridColumns()
 <template>
   <div class="side-drawer" :class="{ open }">
     <div class="drawer-header">
-      <span class="drawer-title">Columns</span>
+      <div class="drawer-header-left">
+        <ViewColumnsIcon class="drawer-header-icon" />
+        <span class="drawer-title">Columns</span>
+      </div>
       <button class="drawer-close-btn" @click="$emit('close')">✕</button>
     </div>
     <div class="drawer-section drawer-section-scroll">
@@ -79,6 +83,19 @@ const { COLUMNS, hiddenCols, toggleColVisibility } = useGridColumns()
 }
 
 .drawer-close-btn:hover { color: #ccc; }
+
+.drawer-header-icon {
+  width: 14px;
+  height: 14px;
+  color: #c87628;
+  flex-shrink: 0;
+}
+
+.drawer-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
 
 .drawer-section {
   padding: 0.65rem 0.75rem;
