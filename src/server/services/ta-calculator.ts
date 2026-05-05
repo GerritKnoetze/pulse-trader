@@ -14,7 +14,7 @@ import type { BarInput } from '../database/repositories/market-data-repository'
 
 export type ScannerCategory = 'Continuation' | 'Continuation+' | 'Inside' | 'Reversal' | ''
 export type MtfSignal = 'up' | 'down'
-export interface MtfState { '15': MtfSignal; '30': MtfSignal; '60': MtfSignal; D: MtfSignal; W: MtfSignal; Q: MtfSignal; Y: MtfSignal }
+export interface MtfState { '1': MtfSignal; '5': MtfSignal; '15': MtfSignal; '30': MtfSignal; '60': MtfSignal; D: MtfSignal; W: MtfSignal; M: MtfSignal; Q: MtfSignal; Y: MtfSignal }
 
 export interface ScannerRowTA {
   symbol: string
@@ -236,6 +236,43 @@ export function aggregateToMonthly(bars: BarInput[]): BarInput[] { return aggreg
 export function aggregateToQuarterly(bars: BarInput[]): BarInput[] { return aggregateBars(bars, quarterKey, 'quarter') }
 export function aggregateToYearly(bars: BarInput[]): BarInput[] { return aggregateBars(bars, yearKey, 'year') }
 
+// ── Intraday (minute-based) aggregation ───────────────────────────────────────
+// Groups 1-minute bars into N-minute candles using epoch-aligned bucket keys.
+
+function minuteBucketKey(ts: number, minutes: number): number {
+  const ms = minutes * 60_000
+  return Math.floor(ts / ms) * ms
+}
+
+function aggregateMinuteBars(bars: BarInput[], minutes: number, timespan: string): BarInput[] {
+  const buckets = new Map<number, BarInput[]>()
+  for (const b of bars) {
+    const key = minuteBucketKey(b.timestamp, minutes)
+    const arr = buckets.get(key) ?? []
+    arr.push(b)
+    buckets.set(key, arr)
+  }
+  const result: BarInput[] = []
+  for (const [key, group] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
+    result.push({
+      ticker: group[0]!.ticker,
+      timespan,
+      timestamp: key,
+      open: group[0]!.open,
+      high: Math.max(...group.map(b => b.high)),
+      low: Math.min(...group.map(b => b.low)),
+      close: group[group.length - 1]!.close,
+      volume: group.reduce((s, b) => s + b.volume, 0),
+    })
+  }
+  return result
+}
+
+export function aggregateTo5min(bars: BarInput[]): BarInput[] { return aggregateMinuteBars(bars, 5, '5min') }
+export function aggregateTo15min(bars: BarInput[]): BarInput[] { return aggregateMinuteBars(bars, 15, '15min') }
+export function aggregateTo30min(bars: BarInput[]): BarInput[] { return aggregateMinuteBars(bars, 30, '30min') }
+export function aggregateTo60min(bars: BarInput[]): BarInput[] { return aggregateMinuteBars(bars, 60, '60min') }
+
 // ── MTF state ─────────────────────────────────────────────────────────────────
 
 function tfDirection(bars: BarInput[]): MtfSignal {
@@ -246,24 +283,45 @@ function tfDirection(bars: BarInput[]): MtfSignal {
 
 export function computeMtfState(
   dailyBars: BarInput[],
-  intradaySignals?: { '15': MtfSignal; '30': MtfSignal; '60': MtfSignal },
+  minuteBars?: BarInput[],
 ): MtfState {
   const sorted = [...dailyBars].sort((a, b) => a.timestamp - b.timestamp)
   const weekly    = aggregateToWeekly(sorted)
+  const monthly   = aggregateToMonthly(sorted)
   const quarterly = aggregateToQuarterly(sorted)
   const yearly    = aggregateToYearly(sorted)
 
   const dDir = tfDirection(sorted)
   const wDir = tfDirection(weekly)
+  const mDir = tfDirection(monthly)
   const qDir = tfDirection(quarterly)
   const yDir = tfDirection(yearly)
 
+  // Intraday directions derived from 1min bars; fall back to daily direction if unavailable
+  let dir1: MtfSignal = dDir
+  let dir5: MtfSignal = dDir
+  let dir15: MtfSignal = dDir
+  let dir30: MtfSignal = dDir
+  let dir60: MtfSignal = dDir
+
+  if (minuteBars && minuteBars.length > 0) {
+    const sortedMin = [...minuteBars].sort((a, b) => a.timestamp - b.timestamp)
+    dir1  = tfDirection(sortedMin)
+    dir5  = tfDirection(aggregateTo5min(sortedMin))
+    dir15 = tfDirection(aggregateTo15min(sortedMin))
+    dir30 = tfDirection(aggregateTo30min(sortedMin))
+    dir60 = tfDirection(aggregateTo60min(sortedMin))
+  }
+
   return {
-    '15': intradaySignals?.['15'] ?? dDir,
-    '30': intradaySignals?.['30'] ?? dDir,
-    '60': intradaySignals?.['60'] ?? dDir,
+    '1':  dir1,
+    '5':  dir5,
+    '15': dir15,
+    '30': dir30,
+    '60': dir60,
     D: dDir,
     W: wDir,
+    M: mDir,
     Q: qDir,
     Y: yDir,
   }
@@ -295,7 +353,7 @@ export interface TAResult {
 
 export function computeTA(
   bars: BarInput[],
-  intradaySignals?: { '15': MtfSignal; '30': MtfSignal; '60': MtfSignal },
+  minuteBars?: BarInput[],
 ): TAResult {
   const sorted = [...bars].sort((a, b) => a.timestamp - b.timestamp)
 
@@ -303,7 +361,7 @@ export function computeTA(
   const avgVol30 = computeAvgVol30(sorted)
   const codes = computeCcCodes(sorted)
   const pattern = computePattern(codes)
-  const mtf = computeMtfState(sorted, intradaySignals)
+  const mtf = computeMtfState(sorted, minuteBars)
   const ftfc = computeFTFC(mtf)
   const signal = computeSignal(codes)
   const category = computeCategory(codes, ftfc)

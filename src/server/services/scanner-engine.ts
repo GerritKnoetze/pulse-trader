@@ -4,10 +4,14 @@
  * 1. Fetch full-market snapshot (cached 60 s)
  * 2. Apply ScanCriteria (price, change%, volume) → filtered candidate set
  * 3. Sort candidates by |changePercent| DESC
- * 4. For the requested page: fetch/get-cached daily bars per ticker
+ * 4. For the requested page: fetch/get-cached bars per ticker (L1→L2→L3)
+ *    - Daily bars: permanent in SQLite, incremental delta from API
+ *    - 1-min bars: rolling 5-trading-day window in SQLite, incremental delta
+ *    - W/M/Q/Y derived from daily; 5/15/30/60 derived from 1-min (in memory)
  * 5. Compute all TA fields (ATR, CC codes, pattern, signal, category, MTF, FTFC, inForce)
  * 6. Maintain in-memory row cache → powers SSE live-update fan-out
  * 7. Update WS subscriptions: tier 1 (top-50 A+Q), tier 2 (51-200 A only)
+ * 8. WS AM (per-minute) events persist 1-min bars to SQLite + CandleCache in real-time
  */
 
 import type { ScannerRow, MtfSignal } from '../../app/types/scanner'
@@ -17,15 +21,14 @@ import type { BarInput } from '../database/repositories/market-data-repository'
 import type { AggregateTick } from './ws-relay'
 import { getSnapshotCache } from './snapshot-cache'
 import { getCandleCache } from './candle-cache'
-import { computeTA, computeRVOL } from './ta-calculator'
+import { computeTA, computeRVOL, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min } from './ta-calculator'
 import { getWsRelay } from './ws-relay'
-import { fetchAggregates } from './market-data.service'
+import { getOrSyncDailyBars, getOrSyncMinuteBars, persistMinuteBar } from './market-data.service'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const TIER1_SIZE      = 50   // full A+Q subscriptions
 const TIER2_SIZE      = 150  // A-only subscriptions
-const BARS_TO_FETCH   = 400  // ~1.5 years of daily bars (covers W/Q/Y TA)
 const MAX_CONCURRENCY = 10   // parallel bar fetches per scan page
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -40,12 +43,14 @@ export interface ScanPage {
 
 type SseWriter = (data: object) => void
 
-// Per-symbol intraday signals updated by WS ticks
+// Per-symbol intraday live state updated by WS ticks
 interface IntradayState {
+  '1':  MtfSignal
+  '5':  MtfSignal
   '15': MtfSignal
   '30': MtfSignal
   '60': MtfSignal
-  // live price data
+  // live price/volume data
   lastPrice?: number
   accVolume?: number
 }
@@ -148,13 +153,20 @@ class ScannerEngine {
 
   private async enrichTicker(ticker: SnapshotTicker): Promise<ScannerRow | null> {
     try {
-      const bars = await this.getDailyBars(ticker.ticker)
-      if (bars.length < 2) return this.buildMinimalRow(ticker)
+      const dailyBars = await this.getDailyBars(ticker.ticker)
+      if (dailyBars.length < 2) return this.buildMinimalRow(ticker)
 
-      const intraState = this.intraday.get(ticker.ticker)
-      const ta = computeTA(bars, intraState)
+      // Minute bars are optional — a failure (rate limit, no intraday data, etc.)
+      // must never degrade a row that has valid daily bar data.
+      let minuteBars: BarInput[] = []
+      try {
+        minuteBars = await this.getIntradayBars(ticker.ticker)
+      } catch { /* non-critical — TA will use daily-only MTF fallback */ }
+
+      const ta = computeTA(dailyBars, minuteBars.length > 0 ? minuteBars : undefined)
 
       // Use live WS price if available, else snapshot price
+      const intraState = this.intraday.get(ticker.ticker)
       const last = intraState?.lastPrice ?? ticker.lastTrade?.p ?? ticker.day.c
 
       // Use accumulated volume for RVOL
@@ -200,7 +212,7 @@ class ScannerEngine {
       avgVol30: 0,
       inForce: false,
       ftfc: false,
-      mtf: { '15': 'up', '30': 'up', '60': 'up', D: 'up', W: 'up', Q: 'up', Y: 'up' },
+      mtf: { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up', D: 'up', W: 'up', M: 'up', Q: 'up', Y: 'up' },
       cc: '',
       cc1: '',
       cc2: '',
@@ -211,25 +223,25 @@ class ScannerEngine {
   }
 
   private async getDailyBars(symbol: string): Promise<BarInput[]> {
-    const cache = getCandleCache()
-    const cached = cache.get(symbol, 'day')
+    // L1: in-memory CandleCache
+    const cached = getCandleCache().get(symbol, 'day')
     if (cached) return cached
 
-    // Calculate date range for BARS_TO_FETCH trading days
-    const to = new Date()
-    const from = new Date()
-    from.setDate(from.getDate() - Math.ceil(BARS_TO_FETCH * 1.5)) // extra buffer for weekends/holidays
+    // L2 → L3: SQLite DB (incremental) → Massive.com API (delta/full)
+    const bars = await getOrSyncDailyBars(symbol)
+    if (bars.length > 0) getCandleCache().set(symbol, 'day', bars)
+    return bars
+  }
 
-    const fromStr = from.toISOString().slice(0, 10)!
-    const toStr   = to.toISOString().slice(0, 10)!
+  private async getIntradayBars(symbol: string): Promise<BarInput[]> {
+    // L1: in-memory CandleCache
+    const cached = getCandleCache().get(symbol, 'minute')
+    if (cached) return cached
 
-    try {
-      const bars = await fetchAggregates(symbol, 1, 'day', fromStr, toStr)
-      if (bars.length > 0) cache.set(symbol, 'day', bars)
-      return bars
-    } catch {
-      return []
-    }
+    // L2 → L3: SQLite DB (rolling 5-day window) → Massive.com API (delta/full)
+    const bars = await getOrSyncMinuteBars(symbol)
+    if (bars.length > 0) getCandleCache().set(symbol, 'minute', bars)
+    return bars
   }
 
   // ── Private: WS tick handling ─────────────────────────────────────────────
@@ -238,27 +250,57 @@ class ScannerEngine {
     if (tick.ev !== 'A' && tick.ev !== 'AM') return
     const sym = tick.sym
 
-    // Update intraday state
+    // Update live price/volume state
     let state = this.intraday.get(sym)
     if (!state) {
-      state = { '15': 'up', '30': 'up', '60': 'up' }
+      state = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
       this.intraday.set(sym, state)
     }
     state.lastPrice = tick.c
     state.accVolume = tick.av
-    // Use closing price vs opening to determine intraday direction
-    const dir: MtfSignal = tick.c >= tick.o ? 'up' : 'down'
-    state['15'] = dir
-    state['30'] = dir
-    state['60'] = dir
+
+    if (tick.ev === 'AM') {
+      // Completed 1-minute bar — persist to CandleCache and SQLite
+      const bar: BarInput = {
+        ticker: sym,
+        timespan: 'minute',
+        timestamp: tick.s,
+        open: tick.o,
+        high: tick.h,
+        low: tick.l,
+        close: tick.c,
+        volume: tick.v,
+      }
+      getCandleCache().appendBar(sym, 'minute', bar)
+      try { persistMinuteBar(bar) } catch { /* non-critical */ }
+
+      // Re-derive all intraday directions from the updated 1-min bar set in CandleCache.
+      // This is the only correct approach — a single 1-min bar closing red does NOT make
+      // the 15-min or 60-min bar bearish; those depend on their own aggregated close vs open.
+      const minuteBars = getCandleCache().get(sym, 'minute') ?? [bar]
+      const dir1  = bar.close >= bar.open ? 'up' : 'down'
+      const dir5  = intradayDir(aggregateTo5min(minuteBars))
+      const dir15 = intradayDir(aggregateTo15min(minuteBars))
+      const dir30 = intradayDir(aggregateTo30min(minuteBars))
+      const dir60 = intradayDir(aggregateTo60min(minuteBars))
+      state['1']  = dir1 as MtfSignal
+      state['5']  = dir5 as MtfSignal
+      state['15'] = dir15 as MtfSignal
+      state['30'] = dir30 as MtfSignal
+      state['60'] = dir60 as MtfSignal
+    }
 
     // Patch cached row if present
     const row = this.rowCache.get(sym)
     if (row) {
       row.last = Math.round(tick.c * 100) / 100
-      row.mtf['15'] = dir
-      row.mtf['30'] = dir
-      row.mtf['60'] = dir
+      if (tick.ev === 'AM') {
+        row.mtf['1']  = state['1']
+        row.mtf['5']  = state['5']
+        row.mtf['15'] = state['15']
+        row.mtf['30'] = state['30']
+        row.mtf['60'] = state['60']
+      }
       this.broadcastUpdate(row)
     }
   }
@@ -277,6 +319,15 @@ class ScannerEngine {
     const tier2 = top.slice(TIER1_SIZE, TIER1_SIZE + TIER2_SIZE).map(t => t.ticker)
     getWsRelay().updateSubscriptions(tier1, tier2)
   }
+}
+
+// ── Intraday direction helper ─────────────────────────────────────────────────
+// Returns the direction of the last bar in an aggregated series.
+
+function intradayDir(bars: BarInput[]): MtfSignal {
+  if (bars.length === 0) return 'up'
+  const last = bars[bars.length - 1]!
+  return last.close >= last.open ? 'up' : 'down'
 }
 
 // ── Criteria filter ────────────────────────────────────────────────────────────

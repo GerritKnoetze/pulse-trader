@@ -267,3 +267,116 @@ export function getMarketDataStatus() {
     totalBars: repo.getTotalBars(),
   };
 }
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+import type { MarketDataRow } from '../database/repositories/market-data-repository';
+
+function mapRowToBar(row: MarketDataRow): BarInput {
+  return {
+    ticker: row.Ticker,
+    timespan: row.Timespan,
+    timestamp: row.Timestamp,
+    open: row.Open,
+    high: row.High,
+    low: row.Low,
+    close: row.Close,
+    volume: row.Volume,
+    transactions: row.Transactions ?? undefined,
+  };
+}
+
+// Calendar days to look back when doing a full daily history fetch (~400 trading days)
+const DAILY_LOOKBACK_CALENDAR_DAYS = 600;
+
+// Rolling window for 1-minute bars: 5 trading days ≈ 7 calendar days
+const MINUTE_WINDOW_CALENDAR_DAYS = 7;
+
+/**
+ * Three-layer daily bar fetch:
+ *   L2 → SQLite (permanent store, incremental updates to yesterday)
+ *   L3 → Massive.com API (full history on first fetch; delta thereafter)
+ *
+ * Only stores bars up to and including yesterday (completed candles).
+ * Today's live price comes from the market snapshot, not stored bars.
+ */
+export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
+  const repo = new MarketDataRepository();
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const toStr = yesterday.toISOString().slice(0, 10)!;
+
+  const latest = repo.getLatestTimestamp(ticker, 'day');
+
+  if (latest === null) {
+    // First fetch: pull full history
+    const from = new Date();
+    from.setDate(from.getDate() - DAILY_LOOKBACK_CALENDAR_DAYS);
+    const bars = await fetchAggregates(ticker, 1, 'day', from.toISOString().slice(0, 10)!, toStr);
+    if (bars.length > 0) repo.upsertBars(bars);
+  } else {
+    // Incremental: fetch only bars after the last stored date
+    const nextDay = new Date(latest);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    const fromStr = nextDay.toISOString().slice(0, 10)!;
+    if (fromStr <= toStr) {
+      const bars = await fetchAggregates(ticker, 1, 'day', fromStr, toStr);
+      if (bars.length > 0) repo.upsertBars(bars);
+    }
+  }
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - DAILY_LOOKBACK_CALENDAR_DAYS);
+  const rows = repo.getBars(ticker, 'day', cutoff.getTime(), Date.now());
+  return rows.map(mapRowToBar);
+}
+
+/**
+ * Three-layer 1-minute bar fetch with rolling window:
+ *   L2 → SQLite (rolling 5-trading-day window, auto-pruned)
+ *   L3 → Massive.com API (full window on first fetch; delta thereafter)
+ *
+ * Stores all bars up to and including the current minute.
+ * WS AM events append today's bars in real-time via persistMinuteBar().
+ */
+export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
+  const repo = new MarketDataRepository();
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - MINUTE_WINDOW_CALENDAR_DAYS);
+  const cutoffMs = cutoff.getTime();
+  const fromStr = cutoff.toISOString().slice(0, 10)!;
+  const toStr = new Date().toISOString().slice(0, 10)!;
+
+  // Prune expired bars first
+  repo.pruneOlderThan(ticker, 'minute', cutoffMs);
+
+  const latest = repo.getLatestTimestamp(ticker, 'minute');
+
+  if (latest === null || latest < cutoffMs) {
+    // No data or all data expired: fetch full window
+    const bars = await fetchAggregates(ticker, 1, 'minute', fromStr, toStr);
+    if (bars.length > 0) repo.upsertBars(bars, 'IGNORE');
+  } else {
+    // Incremental: fetch only from after the latest stored bar
+    const nextMinute = new Date(latest + 60_000);
+    const incrementalFrom = nextMinute.toISOString().slice(0, 10)!;
+    if (incrementalFrom <= toStr) {
+      const bars = await fetchAggregates(ticker, 1, 'minute', incrementalFrom, toStr);
+      if (bars.length > 0) repo.upsertBars(bars, 'IGNORE');
+    }
+  }
+
+  const rows = repo.getBars(ticker, 'minute', cutoffMs, Date.now());
+  return rows.map(mapRowToBar);
+}
+
+/**
+ * Persist a single completed 1-minute bar (called from WS AM event handler).
+ * Uses INSERT OR IGNORE so duplicate bars (from overlapping fetches) are silently skipped.
+ */
+export function persistMinuteBar(bar: BarInput): void {
+  const repo = new MarketDataRepository();
+  repo.upsertBars([bar], 'IGNORE');
+}

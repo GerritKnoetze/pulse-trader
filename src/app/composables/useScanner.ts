@@ -48,8 +48,8 @@ function saveState(s: PersistedState) {
 const timeframe          = ref<ScannerTimeframe>('D')
 const mode               = ref<ScannerMode>('signal')
 const activeQuickFilter  = ref<string | null>(null)
-const sortKey            = ref<keyof ScannerRow | null>(null)
-const sortDir            = ref<SortDirection>(null)
+const sortKey            = ref<keyof ScannerRow | null>('chgPct')
+const sortDir            = ref<SortDirection>('desc')
 
 const rows               = ref<ScannerRow[]>([])
 const isScanning         = ref(false)
@@ -112,8 +112,8 @@ function initScanner() {
   timeframe.value         = ps.timeframe         ?? 'D'
   mode.value              = ps.mode              ?? 'signal'
   activeQuickFilter.value = ps.activeQuickFilter ?? null
-  sortKey.value           = ps.sortKey           ?? null
-  sortDir.value           = ps.sortDir           ?? null
+  sortKey.value           = ps.sortKey           ?? 'chgPct'
+  sortDir.value           = ps.sortDir           ?? 'desc'
 }
 
 function setTimeframe(tf: ScannerTimeframe) { timeframe.value = tf; persist() }
@@ -130,7 +130,7 @@ function setSortBy(key: keyof ScannerRow) {
   if (sortKey.value === key) {
     if (sortDir.value === 'asc') sortDir.value = 'desc'
     else if (sortDir.value === 'desc') { sortDir.value = null; sortKey.value = null }
-    else sortDir.value = 'asc'
+    else { sortKey.value = 'chgPct'; sortDir.value = 'desc' }  // reset to default
   } else {
     sortKey.value = key
     sortDir.value = 'asc'

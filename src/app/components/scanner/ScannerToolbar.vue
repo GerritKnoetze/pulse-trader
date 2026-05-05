@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { ChevronDownIcon, XMarkIcon, FunnelIcon } from '@heroicons/vue/24/outline'
+import { ChevronDownIcon, XMarkIcon, FunnelIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
 import { useScanner } from '~/composables/useScanner'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 import { useGridFilters } from '~/composables/useGridFilters'
@@ -9,13 +9,13 @@ import type { ScannerTimeframe, ScannerMode } from '~/types/scanner'
 const {
   timeframe, mode, activeQuickFilter,
   setTimeframe, setMode, toggleQuickFilter, clearFilters,
-  QUICK_FILTERS,
+  QUICK_FILTERS, runScan, isScanning,
 } = useScanner()
 
 const { savedPresets, applyPreset } = useGridFilterPresets()
 const { resetFilters } = useGridFilters()
 
-const TIMEFRAMES: ScannerTimeframe[] = ['15', '30', '60', 'D', 'W', 'M', 'Q', 'Y']
+const TIMEFRAMES: ScannerTimeframe[] = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y']
 
 const quickFiltersOpen = ref(false)
 const gridOptionsOpen = ref(false)
@@ -136,6 +136,16 @@ function selectPreset(id: string) {
 
     <!-- Spacer -->
     <div class="toolbar-spacer" />
+
+    <!-- Refresh grid button -->
+    <button
+      class="refresh-btn"
+      title="Refresh grid"
+      :disabled="isScanning"
+      @click="runScan(false)"
+    >
+      <ArrowPathIcon class="refresh-icon" :class="{ spinning: isScanning }" />
+    </button>
 
     <!-- Grid Options -->
     <div
@@ -394,6 +404,45 @@ function selectPreset(id: string) {
 
 .toolbar-spacer {
   flex: 1;
+}
+
+/* Refresh button */
+.refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-soft);
+  padding: 0.3rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: #555;
+}
+
+.refresh-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.refresh-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.refresh-icon.spinning {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
 /* Grid options */

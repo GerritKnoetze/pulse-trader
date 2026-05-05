@@ -1,7 +1,7 @@
 import { ref, computed, watch } from 'vue'
 import type { ScannerRow } from '~/types/scanner'
 
-export const MTF_TFS = ['15', '30', '60', 'D', 'W', 'Q', 'Y'] as const
+export const MTF_TFS = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y'] as const
 export type MtfTf = typeof MTF_TFS[number]
 
 export interface ColDef {
@@ -30,7 +30,7 @@ export const COLUMNS: ColDef[] = [
   { key: 'chgDollar', label: 'Chg $',        width: '66px',  align: 'left'   },
   { key: 'chgPct',    label: 'Ch%',          width: '60px',  align: 'left'   },
   { key: 'atrDollar', label: 'ATR $',        width: '60px',  align: 'left'   },
-  { key: 'mtf',       label: 'MTF',          width: '178px', align: 'center', noSort: true, noFilter: true },
+  { key: 'mtf',       label: 'MTF',          width: '248px', align: 'center', noSort: true, noFilter: true },
 ]
 
 const GRID_STATE_KEY = 'pulse-scanner-grid-state'

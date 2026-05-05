@@ -11,7 +11,7 @@ import { useGridFilters } from '~/composables/useGridFilters'
 import type { ScannerRow } from '~/types/scanner'
 import type { ColDef } from '~/composables/useGridColumns'
 
-const MTF_TFS = ['15', '30', '60', 'D', 'W', 'Q', 'Y'] as const
+const MTF_TFS = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y'] as const
 type MtfTf = typeof MTF_TFS[number]
 
 const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor } = useScanner()
@@ -403,11 +403,11 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 .cat-cont      { color: #42b883 !important; }
 .cat-cont-plus { color: #4ade80 !important; }
 .cat-inside    { color: #f59e0b !important; }
-.cat-reversal  { color: #f97316 !important; }
+.cat-reversal  { color: #ff6b6b !important; }
 
 .td-signal { font-size: 0.82rem; }
 .sig-bullish { color: #42b883 !important; }
-.sig-bearish { color: #f97316 !important; }
+.sig-bearish { color: #ff6b6b !important; }
 .sig-hammer  { color: #f59e0b !important; }
 
 .td-pattern {
@@ -417,7 +417,7 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 
 .td-cc { font-weight: 600; font-size: 0.82rem; }
 .cc-up   { color: #42b883 !important; }
-.cc-down { color: #f97316 !important; }
+.cc-down { color: #ff6b6b !important; }
 
 .td-vol { font-variant-numeric: tabular-nums; }
 
@@ -490,8 +490,8 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 }
 
 .mtf-down {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.14);
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.14);
 }
 
 /* ── Infinite scroll sentinel ───────────────────────────────── */

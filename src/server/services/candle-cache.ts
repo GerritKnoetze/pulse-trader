@@ -33,6 +33,27 @@ class CandleCache {
     this.store.set(`${ticker}:${timespan}`, { bars, expiresAt: Date.now() + ttl })
   }
 
+  /**
+   * Append or update a single bar in the cache (O(1) for the common case).
+   * If the last bar has the same timestamp it is replaced (in-progress bar update).
+   * Otherwise the bar is appended. Creates the cache entry if it doesn't exist.
+   */
+  appendBar(ticker: string, timespan: string, bar: BarInput): void {
+    const key = `${ticker}:${timespan}`
+    const entry = this.store.get(key)
+    if (!entry || Date.now() > entry.expiresAt) {
+      const ttl = TTL_MS[timespan] ?? 60 * 60_000
+      this.store.set(key, { bars: [bar], expiresAt: Date.now() + ttl })
+      return
+    }
+    const last = entry.bars[entry.bars.length - 1]
+    if (last && last.timestamp === bar.timestamp) {
+      entry.bars[entry.bars.length - 1] = bar  // update in-progress bar
+    } else {
+      entry.bars.push(bar)
+    }
+  }
+
   invalidate(ticker: string, timespan?: string): void {
     if (timespan) {
       this.store.delete(`${ticker}:${timespan}`)
