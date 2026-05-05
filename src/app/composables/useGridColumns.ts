@@ -149,6 +149,52 @@ function startResize(e: MouseEvent, key: string) {
   document.addEventListener('mouseup', onUp)
 }
 
+function autoSizeColumns() {
+  const table = document.querySelector('.scanner-table') as HTMLTableElement | null
+  if (!table) return
+
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')!
+
+  const thEl = table.querySelector('th')
+  const tdEl = table.querySelector('tbody td')
+  const thFont = thEl ? getComputedStyle(thEl).font : '13px sans-serif'
+  const tdFont = tdEl ? getComputedStyle(tdEl).font : '13px sans-serif'
+
+  const CELL_PAD  = 24  // left + right cell padding
+  const ICON_PAD  = 24  // extra room for sort + filter icons in header
+  const MIN_WIDTH = 40
+
+  const newWidths: Record<string, number> = { ...colWidths.value }
+
+  orderedColumns.value.forEach((col, colIdx) => {
+    if (col.key === 'mtf') return  // chip-based — keep as-is
+
+    // Measure header label
+    ctx.font = thFont
+    let maxW = ctx.measureText(col.label).width + CELL_PAD + (col.noSort && col.noFilter ? 0 : ICON_PAD)
+
+    // Measure every body cell in this column
+    ctx.font = tdFont
+    const trs = table.querySelectorAll('tbody tr')
+    trs.forEach(tr => {
+      const td = tr.querySelectorAll('td')[colIdx]
+      if (!td) return
+      const text = (td.textContent ?? '').trim()
+      if (!text) return
+      const w = ctx.measureText(text).width + CELL_PAD
+      if (w > maxW) maxW = w
+    })
+
+    // Symbol column: add room for copy icon button
+    if (col.key === 'symbol') maxW += 22
+
+    newWidths[col.key as string] = Math.ceil(Math.max(maxW, MIN_WIDTH))
+  })
+
+  colWidths.value = newWidths
+}
+
 export function useGridColumns() {
   return {
     COLUMNS,
@@ -168,5 +214,6 @@ export function useGridColumns() {
     onColDrop,
     onColDragEnd,
     startResize,
+    autoSizeColumns,
   }
 }

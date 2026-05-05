@@ -24,6 +24,7 @@ import { getCandleCache } from './candle-cache'
 import { computeTA, computeRVOL, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min } from './ta-calculator'
 import { getWsRelay } from './ws-relay'
 import { getOrSyncDailyBars, getOrSyncMinuteBars, persistMinuteBar } from './market-data.service'
+import { appLog } from './app-log'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +76,27 @@ class ScannerEngine {
   constructor() {
     // Wire WS tick handler
     getWsRelay().onTick('scanner-engine', (tick) => this.onTick(tick as AggregateTick))
+
+    // Log WS status changes — suppress transient reconnect noise:
+    // • 'connecting' / 'authenticating' are not logged (expected during reconnect cycle)
+    // • 'connected' is logged immediately
+    // • 'disconnected' is only logged after 3 s of staying disconnected
+    //   (so a quick reconnect loop doesn't flood the console)
+    let disconnectLogTimer: ReturnType<typeof setTimeout> | null = null
+    getWsRelay().onStatus('scanner-engine-log', (status) => {
+      if (disconnectLogTimer) { clearTimeout(disconnectLogTimer); disconnectLogTimer = null }
+      if (status === 'connected') {
+        appLog('WS connected — live ticks active')
+      } else if (status === 'error') {
+        appLog('WS error — check API key / network', 'error')
+      } else if (status === 'disconnected') {
+        disconnectLogTimer = setTimeout(() => {
+          disconnectLogTimer = null
+          appLog('WS disconnected', 'warn')
+        }, 3_000)
+      }
+      // 'connecting' and 'authenticating' intentionally not logged
+    })
   }
 
   // ── Public API ──────────────────────────────────────────────────────────
@@ -86,8 +108,26 @@ class ScannerEngine {
    * @param limit     max rows to return per page
    */
   async scan(criteria: ScanCriteria, cursor: string | null, limit: number): Promise<ScanPage> {
+    const isFirstPage = !cursor
+    if (isFirstPage) {
+      const parts: string[] = []
+      if (criteria.minPrice != null || criteria.maxPrice != null)
+        parts.push(`price ${criteria.minPrice ?? ''}–${criteria.maxPrice ?? ''}`)
+      if (criteria.minChangePercent != null || criteria.maxChangePercent != null)
+        parts.push(`chg% ${criteria.minChangePercent ?? ''}–${criteria.maxChangePercent ?? ''}`)
+      if (criteria.minVolume != null) parts.push(`vol ≥${criteria.minVolume.toLocaleString()}`)
+      appLog(`Scan started${parts.length ? ' — ' + parts.join(', ') : ''}`)
+    }
+
     const snapshot = await getSnapshotCache().getSnapshot()
-    const candidates = filterSnapshot(snapshot, criteria)
+    // Deduplicate by ticker (API can return the same symbol from multiple exchanges)
+    const seen = new Set<string>()
+    const unique = snapshot.filter(t => { if (seen.has(t.ticker)) return false; seen.add(t.ticker); return true })
+    const candidates = filterSnapshot(unique, criteria)
+
+    if (isFirstPage) {
+      appLog(`Snapshot: ${snapshot.length.toLocaleString()} universe → ${candidates.length.toLocaleString()} matched`)
+    }
 
     // Sort by |change%| descending so biggest movers are first
     candidates.sort((a, b) => Math.abs(b.todaysChangePerc) - Math.abs(a.todaysChangePerc))
@@ -103,7 +143,9 @@ class ScannerEngine {
     }
 
     const page = candidates.slice(startIdx, startIdx + limit)
+    appLog(`Enriching ${page.length} symbol${page.length !== 1 ? 's' : ''} (page offset ${startIdx})`)
     const rows = await this.enrichPage(page)
+    appLog(`Enriched ${rows.length}/${page.length} symbols — TA computed`)
 
     // Update row cache
     for (const row of rows) this.rowCache.set(row.symbol, row)
@@ -112,6 +154,10 @@ class ScannerEngine {
     this.updateWsSubscriptions(candidates.slice(0, TIER1_SIZE + TIER2_SIZE))
 
     this.lastScanAt = new Date().toISOString()
+    if (isFirstPage) {
+      const tickers = rows.slice(0, 5).map(r => r.symbol).join(', ')
+      appLog(`Scan complete — ${rows.length} rows${rows.length > 0 ? ` (top: ${tickers}${rows.length > 5 ? '…' : ''})` : ''}`)
+    }
 
     return {
       rows,
@@ -154,14 +200,20 @@ class ScannerEngine {
   private async enrichTicker(ticker: SnapshotTicker): Promise<ScannerRow | null> {
     try {
       const dailyBars = await this.getDailyBars(ticker.ticker)
-      if (dailyBars.length < 2) return this.buildMinimalRow(ticker)
+      if (dailyBars.length < 2) {
+        appLog(`${ticker.ticker}: insufficient daily bars (${dailyBars.length}) — minimal row`, 'warn')
+        return this.buildMinimalRow(ticker)
+      }
 
       // Minute bars are optional — a failure (rate limit, no intraday data, etc.)
       // must never degrade a row that has valid daily bar data.
       let minuteBars: BarInput[] = []
       try {
         minuteBars = await this.getIntradayBars(ticker.ticker)
-      } catch { /* non-critical — TA will use daily-only MTF fallback */ }
+      } catch (err) {
+        appLog(`${ticker.ticker}: intraday fetch failed — ${String(err).slice(0, 80)}`, 'warn')
+        /* non-critical — TA will use daily-only MTF fallback */
+      }
 
       const ta = computeTA(dailyBars, minuteBars.length > 0 ? minuteBars : undefined)
 

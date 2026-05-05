@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { AdjustmentsHorizontalIcon } from '@heroicons/vue/24/outline'
 import { useScanCriteria } from '~/composables/useScanCriteria'
 import { useScanner } from '~/composables/useScanner'
@@ -9,6 +9,8 @@ defineEmits<{ close: [] }>()
 
 const { criteria, activeCount, updateCriteria, resetCriteria } = useScanCriteria()
 const { runScan, isScanning } = useScanner()
+const isMounted = ref(false)
+onMounted(() => { isMounted.value = true })
 
 const form = {
   minPrice:         computed({ get: () => criteria.value.minPrice         ?? '', set: (v) => updateCriteria({ minPrice:         v === '' ? undefined : Number(v) }) }),
@@ -90,7 +92,7 @@ function handleReset() {
     </div>
 
     <div class="criteria-footer">
-      <button class="btn-reset" :disabled="activeCount === 0" @click="handleReset">Reset</button>
+      <button class="btn-reset" :disabled="!isMounted || activeCount === 0" @click="handleReset">Reset</button>
       <button class="btn-scan" :disabled="isScanning" @click="runScan(false)">
         <span v-if="isScanning" class="scan-spinner" />
         {{ isScanning ? 'Scanning…' : 'Scan' }}

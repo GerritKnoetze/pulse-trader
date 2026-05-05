@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue';
 import {
-  ArrowPathIcon,
   CheckCircleIcon,
   SparklesIcon,
 } from '@heroicons/vue/24/outline';
 import { useSettings } from '~/composables/useSettings';
 import { useToast } from '~/composables/useToast';
 import type { GithubModel } from '~/server/api/settings/llm-models.get';
+import SettingsLlmConnectionTestModal from '~/components/settings/SettingsLlmConnectionTestModal.vue';
 
 const { getSettings } = useSettings();
 const toast = useToast();
@@ -24,15 +24,14 @@ const llmProviders = [
 
 const activeLlmProvider = ref('github-copilot');
 
+const testModalOpen = ref(false);
+
 const llmSettings = reactive({
   apiKey: '',
   model: 'gpt-4o',
   customModel: '',
   apiUrl: 'https://models.inference.ai.azure.com',
 });
-
-const testing = ref(false);
-const testResult = ref<{ success: boolean; response?: string; latencyMs?: number; error?: string } | null>(null);
 
 // ─── Model Selection (mirrors Pulse) ─────────────────────────
 
@@ -190,19 +189,7 @@ async function load() {
 }
 
 async function testConnection() {
-  testing.value = true;
-  testResult.value = null;
-  try {
-    const res = await $fetch<{ success: boolean; data: { response: string; latencyMs: number } }>('/api/settings/llm-test', { method: 'POST' });
-    testResult.value = { success: true, response: res.data.response, latencyMs: res.data.latencyMs };
-    toast.success(`LLM connected (${res.data.latencyMs}ms)`);
-  } catch (err: unknown) {
-    const message = (err as { data?: { message?: string } })?.data?.message || (err instanceof Error ? err.message : 'Connection failed');
-    testResult.value = { success: false, error: message };
-    toast.error('LLM test failed');
-  } finally {
-    testing.value = false;
-  }
+  testModalOpen.value = true;
 }
 
 function getFormData(): Record<string, unknown> {
@@ -338,19 +325,17 @@ onMounted(async () => {
         <div class="test-connection">
           <button
             class="btn btn-primary"
-            :disabled="testing"
             @click="testConnection"
           >
-            <ArrowPathIcon class="btn-icon" :class="{ spinning: testing }" />
-            {{ testing ? 'Testing...' : 'Test Connection' }}
+            Test Connection
           </button>
-          <span v-if="testResult && testResult.success" class="connection-ok">✓ Connected ({{ testResult.latencyMs }}ms)</span>
-          <span v-if="testResult && !testResult.success" class="connection-fail">✗ {{ testResult.error }}</span>
         </div>
       </div>
     </div>
 
   </div>
+
+  <SettingsLlmConnectionTestModal :open="testModalOpen" @close="testModalOpen = false" />
 </template>
 
 

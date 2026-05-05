@@ -3,18 +3,15 @@ import { ref, reactive, onMounted } from 'vue';
 import {
   CheckCircleIcon,
   ChartBarIcon,
-  ArrowPathIcon,
 } from '@heroicons/vue/24/outline';
 import { useSettings } from '~/composables/useSettings';
-import { useMarketData } from '~/composables/useMarketData';
 import { useToast } from '~/composables/useToast';
+import SettingsConnectionTestModal from '~/components/settings/SettingsConnectionTestModal.vue';
 
 const { getSettings } = useSettings();
-const { validateConnection } = useMarketData();
 const toast = useToast();
 
-const testingConnection = ref(false);
-const connectionStatus = ref<'idle' | 'success' | 'error'>('idle');
+const testModalOpen = ref(false);
 
 const dataBrokers = [
   {
@@ -69,23 +66,7 @@ function getFormData(): Record<string, unknown> {
 defineExpose({ getFormData });
 
 async function testConnection() {
-  testingConnection.value = true;
-  connectionStatus.value = 'idle';
-  try {
-    const res = await validateConnection();
-    if (res.valid) {
-      connectionStatus.value = 'success';
-      toast.success('Connection successful');
-    } else {
-      connectionStatus.value = 'error';
-      toast.error('Connection failed — check your API key');
-    }
-  } catch {
-    connectionStatus.value = 'error';
-    toast.error('Connection test failed');
-  } finally {
-    testingConnection.value = false;
-  }
+  testModalOpen.value = true;
 }
 
 onMounted(load);
@@ -180,17 +161,15 @@ onMounted(load);
         <div class="test-connection">
           <button
             class="btn btn-primary"
-            :disabled="testingConnection"
             @click="testConnection"
           >
-            <ArrowPathIcon class="btn-icon" :class="{ spinning: testingConnection }" />
-            {{ testingConnection ? 'Testing...' : 'Test Connection' }}
+            Test Connection
           </button>
-          <span v-if="connectionStatus === 'success'" class="connection-ok">✓ Connected</span>
-          <span v-if="connectionStatus === 'error'" class="connection-fail">✗ Failed</span>
         </div>
       </div>
     </div>
 
   </div>
+
+  <SettingsConnectionTestModal :open="testModalOpen" @close="testModalOpen = false" />
 </template>

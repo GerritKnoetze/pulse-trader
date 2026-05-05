@@ -5,6 +5,7 @@ import { useGridColumns } from '~/composables/useGridColumns'
 import { useGridFilters } from '~/composables/useGridFilters'
 import { useGridLayouts } from '~/composables/useGridLayouts'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
+import ScannerLogConsole from '~/components/scanner/ScannerLogConsole.vue'
 
 const { clearFilters, initScanner, runScan, connectLive, disconnectLive } = useScanner()
 const { initColumns, resetColumns } = useGridColumns()
@@ -13,6 +14,7 @@ const { initLayouts } = useGridLayouts()
 const { initPresets } = useGridFilterPresets()
 
 const activePanel = ref<'columns' | 'layouts' | 'my-filters' | 'criteria' | null>(null)
+const logOpen = ref(false)
 
 function togglePanel(p: 'columns' | 'layouts' | 'my-filters' | 'criteria') {
   activePanel.value = activePanel.value === p ? null : p
@@ -49,7 +51,8 @@ onUnmounted(() => {
     <div class="scanner-grid-main">
       <ScannerToolbar />
       <ScannerGridTable />
-      <ScannerStatusBar />
+      <ScannerStatusBar :log-open="logOpen" @toggle-log="logOpen = !logOpen" />
+      <ScannerLogConsole :open="logOpen" @update:open="logOpen = $event" />
     </div>
     <ScannerCriteriaPanel :open="activePanel === 'criteria'" @close="activePanel = null" />
     <ScannerColumnsDrawer :open="activePanel === 'columns'" @close="activePanel = null" />

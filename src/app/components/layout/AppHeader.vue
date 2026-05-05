@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Bars3Icon, ChevronDownIcon } from '@heroicons/vue/24/outline'
 import AppLogo from '~/components/AppLogo.vue'
+import MarketStatusBar from '~/components/layout/MarketStatusBar.vue'
 
 defineEmits<{
   'toggle-sidebar': []
@@ -47,7 +48,7 @@ const supportOpen = ref(false)
       </nav>
 
       <div class="header-actions">
-        <!-- Future: connection status, user info, etc. -->
+        <MarketStatusBar />
       </div>
     </div>
   </header>

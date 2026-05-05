@@ -1,9 +1,20 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref } from 'vue'
 import {
   FunnelIcon,
+  DocumentDuplicateIcon,
 } from '@heroicons/vue/24/outline'
 import { FunnelIcon as FunnelIconSolid } from '@heroicons/vue/24/solid'
+
+const copiedSymbol = ref<string | null>(null)
+let copyTimeout: ReturnType<typeof setTimeout> | null = null
+
+function copySymbol(symbol: string) {
+  navigator.clipboard.writeText(symbol)
+  copiedSymbol.value = symbol
+  if (copyTimeout) clearTimeout(copyTimeout)
+  copyTimeout = setTimeout(() => { copiedSymbol.value = null }, 1500)
+}
 import { useScanner } from '~/composables/useScanner'
 import { useChartTabs } from '~/composables/useChartTabs'
 import { useGridColumns } from '~/composables/useGridColumns'
@@ -16,24 +27,6 @@ type MtfTf = typeof MTF_TFS[number]
 
 const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor } = useScanner()
 const { openTab } = useChartTabs()
-
-// ── Infinite scroll ─────────────────────────────────────────
-const sentinelEl = ref<HTMLTableRowElement | null>(null)
-let observer: IntersectionObserver | null = null
-
-onMounted(() => {
-  observer = new IntersectionObserver(
-    (entries) => {
-      if (entries[0]?.isIntersecting && nextCursor.value && !isLoadingMore.value) {
-        loadMore()
-      }
-    },
-    { rootMargin: '200px' },
-  )
-  if (sentinelEl.value) observer.observe(sentinelEl.value)
-})
-
-onUnmounted(() => { observer?.disconnect() })
 
 const {
   orderedColumns,
@@ -185,7 +178,17 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
             :class="getCellTdClass(col, row)"
           >
             <template v-if="col.key === 'symbol'">
-              <span class="symbol-link" @click="openTab(row.symbol, row.last)">{{ row.symbol }}</span>
+              <span class="symbol-cell">
+                <span class="symbol-link" @click="openTab(row.symbol, row.last)">{{ row.symbol }}</span>
+                <button
+                  class="symbol-copy-btn"
+                  :class="{ 'symbol-copy-copied': copiedSymbol === row.symbol }"
+                  :title="copiedSymbol === row.symbol ? 'Copied!' : 'Copy symbol'"
+                  @click.stop="copySymbol(row.symbol)"
+                >
+                  <DocumentDuplicateIcon class="symbol-copy-icon" />
+                </button>
+              </span>
             </template>
             <template v-else-if="col.key === 'inForce'">
               <span v-if="row.inForce" class="dot dot-green" title="In Force" />
@@ -206,11 +209,15 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
           </td>
         </tr>
       </tbody>
-      <!-- Infinite scroll sentinel -->
       <tfoot>
-        <tr ref="sentinelEl">
-          <td :colspan="orderedColumns.length" class="sentinel-cell">
+        <tr>
+          <td :colspan="orderedColumns.length" class="load-more-cell">
             <span v-if="isLoadingMore" class="load-more-spinner">Loading…</span>
+            <button
+              v-else-if="nextCursor"
+              class="load-more-btn"
+              @click="loadMore()"
+            >Load more</button>
           </td>
         </tr>
       </tfoot>
@@ -392,6 +399,43 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
   text-decoration-color: currentColor;
 }
 
+.symbol-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.symbol-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: transparent;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+
+.td-symbol:hover .symbol-copy-btn,
+.symbol-copy-btn.symbol-copy-copied {
+  color: var(--color-text-mute, #888);
+}
+
+.symbol-copy-btn:hover {
+  color: var(--color-text, #eee) !important;
+}
+
+.symbol-copy-btn.symbol-copy-copied {
+  color: #42b883 !important;
+}
+
+.symbol-copy-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
 .td-last {
   color: var(--color-text) !important;
   font-variant-numeric: tabular-nums;
@@ -495,12 +539,24 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 }
 
 /* ── Infinite scroll sentinel ───────────────────────────────── */
-.sentinel-cell {
-  height: 1px;
-  padding: 0;
-  border: none;
-  background: transparent;
+.load-more-cell {
+  padding: 0.6rem;
   text-align: center;
+  border: none;
+}
+.load-more-btn {
+  padding: 0.35rem 1.1rem;
+  font-size: 0.78rem;
+  color: var(--color-text-mute, #aaa);
+  background: transparent;
+  border: 1px solid var(--color-border, #444);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.load-more-btn:hover {
+  color: var(--color-text, #eee);
+  border-color: var(--color-text-mute, #888);
 }
 .load-more-spinner {
   display: inline-block;

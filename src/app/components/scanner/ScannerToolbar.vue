@@ -4,6 +4,7 @@ import { ChevronDownIcon, XMarkIcon, FunnelIcon, ArrowPathIcon } from '@heroicon
 import { useScanner } from '~/composables/useScanner'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 import { useGridFilters } from '~/composables/useGridFilters'
+import { useGridColumns } from '~/composables/useGridColumns'
 import type { ScannerTimeframe, ScannerMode } from '~/types/scanner'
 
 const {
@@ -14,6 +15,7 @@ const {
 
 const { savedPresets, applyPreset } = useGridFilterPresets()
 const { resetFilters } = useGridFilters()
+const { autoSizeColumns } = useGridColumns()
 
 const TIMEFRAMES: ScannerTimeframe[] = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y']
 
@@ -159,7 +161,7 @@ function selectPreset(id: string) {
       </button>
       <div v-if="gridOptionsOpen" class="grid-options-menu">
         <button class="qf-item">Two Bar Display</button>
-        <button class="qf-item">Auto Size Columns</button>
+        <button class="qf-item" @click="autoSizeColumns(); gridOptionsOpen = false">Auto Size Columns</button>
       </div>
     </div>
   </div>

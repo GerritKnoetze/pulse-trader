@@ -54,6 +54,7 @@ class WsRelay {
   private reconnectAttempts = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private pingTimer: ReturnType<typeof setInterval> | null = null
+  private stableTimer: ReturnType<typeof setTimeout> | null = null   // resets backoff only after 15s stable
   private stopping = false
 
   private readonly RECONNECT_BASE_MS = 1_000
@@ -81,7 +82,8 @@ class WsRelay {
 
     this.ws.onopen = () => {
       this.setStatus('authenticating')
-      this.ws!.send(JSON.stringify({ action: 'auth', apiKey: creds.apiKey }))
+      // massive.com WS auth uses { action, params } — NOT { action, apiKey }
+      this.ws!.send(JSON.stringify({ action: 'auth', params: creds.apiKey }))
     }
 
     this.ws.onmessage = (event: MessageEvent) => {
@@ -96,7 +98,14 @@ class WsRelay {
             const msgStatus = msg['status'] as string
             if (msgStatus === 'auth_success' || msgStatus === 'connected') {
               this.setStatus('connected')
-              this.reconnectAttempts = 0
+              // Only reset the backoff counter after the connection has been stable for
+              // 15 seconds.  Resetting immediately allows the server to keep us in a
+              // 1-second reconnect loop (e.g. when there are no subscriptions yet).
+              if (this.stableTimer) clearTimeout(this.stableTimer)
+              this.stableTimer = setTimeout(() => {
+                this.reconnectAttempts = 0
+                this.stableTimer = null
+              }, 15_000)
               this.startPing()
               // Re-subscribe to any pending subscriptions
               if (this.subscriptions.size > 0) {
@@ -118,6 +127,8 @@ class WsRelay {
 
     this.ws.onclose = () => {
       this.stopPing()
+      // Cancel stable-connection timer — the connection didn't survive long enough
+      if (this.stableTimer) { clearTimeout(this.stableTimer); this.stableTimer = null }
       if (!this.stopping) {
         this.setStatus('disconnected')
         this.scheduleReconnect()

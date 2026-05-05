@@ -2,6 +2,9 @@
 import { computed } from 'vue'
 import { useScanner } from '~/composables/useScanner'
 
+const props = defineProps<{ logOpen?: boolean }>()
+const emit  = defineEmits<{ (e: 'toggle-log'): void }>()
+
 const { totalCount, showingCount, universeCount, lastScan, isScanning, wsStatus } = useScanner()
 
 const lastScanFormatted = computed(() => {
@@ -22,7 +25,7 @@ const wsLabel = computed(() => {
 </script>
 
 <template>
-  <div class="scanner-status-bar">
+  <div class="scanner-status-bar" :class="{ 'log-open': logOpen }" role="button" tabindex="0" title="Click to toggle console log" @click="emit('toggle-log')" @keydown.enter.space.prevent="emit('toggle-log')">
     <span v-if="isScanning" class="status-item scanning-pulse">Scanning…</span>
     <template v-else>
       <span class="status-item">
@@ -41,6 +44,8 @@ const wsLabel = computed(() => {
 
     <div class="status-spacer" />
 
+    <span class="log-toggle-hint">{{ logOpen ? '▼ Console' : '▲ Console' }}</span>
+
     <span class="ws-status" :class="`ws-status--${wsStatus}`">
       <span class="ws-dot" />
       {{ wsLabel }}
@@ -58,7 +63,11 @@ const wsLabel = computed(() => {
   border-top: 1px solid var(--color-border);
   font-size: 0.8rem;
   flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
 }
+.scanner-status-bar:hover { background: var(--color-background-mute, #1e1e1e); }
+.scanner-status-bar.log-open { border-bottom: 1px solid var(--color-border); }
 
 .status-item {
   color: var(--color-text-soft);
@@ -77,6 +86,13 @@ const wsLabel = computed(() => {
 @keyframes pulse-text { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 .status-spacer { flex: 1; }
+
+.log-toggle-hint {
+  font-size: 0.7rem;
+  color: #444;
+  letter-spacing: 0.04em;
+  margin-right: 0.5rem;
+}
 
 .ws-status {
   display: flex;
@@ -98,6 +114,7 @@ const wsLabel = computed(() => {
   background: currentColor;
   flex-shrink: 0;
 }
+
 .ws-status--connecting .ws-dot {
   animation: pulse-dot 1s ease-in-out infinite;
 }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import {
   ViewColumnsIcon,
   CircleStackIcon,
@@ -16,6 +17,8 @@ const emit = defineEmits<{
 }>()
 
 const { activeCount: criteriaCount } = useScanCriteria()
+const isMounted = ref(false)
+onMounted(() => { isMounted.value = true })
 </script>
 
 <template>
@@ -30,7 +33,7 @@ const { activeCount: criteriaCount } = useScanCriteria()
       <AdjustmentsHorizontalIcon class="strip-icon" />
       <span class="strip-label">
         Criteria
-        <span v-if="criteriaCount > 0" class="strip-badge">{{ criteriaCount }}</span>
+        <span v-if="isMounted && criteriaCount > 0" class="strip-badge">{{ criteriaCount }}</span>
       </span>
     </button>
     <!-- Columns -->
