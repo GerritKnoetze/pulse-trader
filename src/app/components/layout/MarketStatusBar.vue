@@ -88,6 +88,56 @@ const sessionClass = computed(() => {
   return 'session-closed'
 })
 
+// Convert an ET wall-clock time to another UTC offset, returns formatted 12h string
+const etToOffset = (etH: number, etM: number, targetOffset: number, et: number): string => {
+  let totalMins = etH * 60 + etM + (targetOffset - et) * 60
+  totalMins = ((totalMins % 1440) + 1440) % 1440
+  const hh = Math.floor(totalMins / 60)
+  const mm = totalMins % 60
+  const ampm = hh >= 12 ? 'PM' : 'AM'
+  const hh12 = (hh % 12) || 12
+  return `${hh12}:${String(mm).padStart(2, '0')} ${ampm}`
+}
+
+// Dynamic session times — adjust for DST automatically
+const sessionTimes = computed(() => {
+  const et = easternOffset.value
+  const local = localOffset
+
+  const range = (h1: number, m1: number, h2: number, m2: number, offset: number) =>
+    `${etToOffset(h1, m1, offset, et)} – ${etToOffset(h2, m2, offset, et)}`
+
+  return {
+    preMarket:  { local: range(4, 0, 9, 30, local), utc: range(4, 0, 9, 30, 0) },
+    regular:    { local: range(9, 30, 16, 0, local), utc: range(9, 30, 16, 0, 0) },
+    afterHours: { local: range(16, 0, 20, 0, local), utc: range(16, 0, 20, 0, 0) },
+    closed:     { local: range(20, 0, 4, 0, local), utc: range(20, 0, 4, 0, 0) },
+  }
+})
+
+// Dynamic timeline labels — local (UTC+2) equivalent of key ET boundary hours
+const timelineLabels = computed(() => {
+  const et = easternOffset.value
+  const local = localOffset
+  const fmt = (etH: number, etM: number): string => {
+    let totalMins = etH * 60 + etM + (local - et) * 60
+    totalMins = ((totalMins % 1440) + 1440) % 1440
+    const hh = Math.floor(totalMins / 60)
+    const mm = totalMins % 60
+    const ampm = hh >= 12 ? 'pm' : 'am'
+    const hh12 = (hh % 12) || 12
+    if (mm === 0) return `${hh12}${ampm}`
+    return `${hh12}:${String(mm).padStart(2, '0')}${ampm}`
+  }
+  return {
+    midnight:   fmt(0, 0),   // 0% on bar
+    premarket:  fmt(4, 0),   // pct(4)
+    regular:    fmt(9, 30),  // pct(9.5)
+    afterHours: fmt(16, 0),  // pct(16)
+    closed:     fmt(20, 0),  // pct(20)
+  }
+})
+
 // Timeline: 24h bar — each hour = 100/24 %
 const pct = (h: number) => (h / 24) * 100
 
@@ -141,11 +191,11 @@ onUnmounted(() => {
               <div class="msb-indicator" :style="{ left: indicatorPosition + '%' }" />
             </div>
             <div class="msb-labels">
-              <span class="msb-lbl" style="left: 0%">6am</span>
-              <span class="msb-lbl" :style="{ left: pct(4) + '%' }">10am</span>
-              <span class="msb-lbl" :style="{ left: pct(9.5) + '%' }">3:30pm</span>
-              <span class="msb-lbl" :style="{ left: pct(16) + '%' }">10pm</span>
-              <span class="msb-lbl" :style="{ left: pct(20) + '%' }">2am</span>
+              <span class="msb-lbl" style="left: 0%">{{ timelineLabels.midnight }}</span>
+              <span class="msb-lbl" :style="{ left: pct(4) + '%' }">{{ timelineLabels.premarket }}</span>
+              <span class="msb-lbl" :style="{ left: pct(9.5) + '%' }">{{ timelineLabels.regular }}</span>
+              <span class="msb-lbl" :style="{ left: pct(16) + '%' }">{{ timelineLabels.afterHours }}</span>
+              <span class="msb-lbl" :style="{ left: pct(20) + '%' }">{{ timelineLabels.closed }}</span>
             </div>
           </div>
         </div>
@@ -174,36 +224,36 @@ onUnmounted(() => {
                 <span class="msb-dot msb-dot--premarket" />
                 <span>Pre-Market</span>
               </td>
-              <td>11:00 AM – 4:30 PM</td>
+              <td>{{ sessionTimes.preMarket.local }}</td>
               <td>4:00 AM – 9:30 AM</td>
-              <td>8:00 AM – 1:30 PM</td>
+              <td>{{ sessionTimes.preMarket.utc }}</td>
             </tr>
             <tr :class="{ 'msb-row-active': sessionClass === 'session-open' }">
               <td class="msb-session-cell">
                 <span class="msb-dot msb-dot--regular" />
                 <span>Regular Hours</span>
               </td>
-              <td>4:30 PM – 11:00 PM</td>
+              <td>{{ sessionTimes.regular.local }}</td>
               <td>9:30 AM – 4:00 PM</td>
-              <td>1:30 PM – 8:00 PM</td>
+              <td>{{ sessionTimes.regular.utc }}</td>
             </tr>
             <tr :class="{ 'msb-row-active': sessionClass === 'session-afterhours' }">
               <td class="msb-session-cell">
                 <span class="msb-dot msb-dot--afterhours" />
                 <span>After-Hours</span>
               </td>
-              <td>11:00 PM – 3:00 AM</td>
+              <td>{{ sessionTimes.afterHours.local }}</td>
               <td>4:00 PM – 8:00 PM</td>
-              <td>8:00 PM – 12:00 AM</td>
+              <td>{{ sessionTimes.afterHours.utc }}</td>
             </tr>
             <tr :class="{ 'msb-row-active': sessionClass === 'session-closed' }">
               <td class="msb-session-cell">
                 <span class="msb-dot msb-dot--closed" />
                 <span>Closed</span>
               </td>
-              <td>3:00 AM – 11:00 AM</td>
+              <td>{{ sessionTimes.closed.local }}</td>
               <td>8:00 PM – 4:00 AM</td>
-              <td>12:00 AM – 8:00 AM</td>
+              <td>{{ sessionTimes.closed.utc }}</td>
             </tr>
           </tbody>
         </table>
