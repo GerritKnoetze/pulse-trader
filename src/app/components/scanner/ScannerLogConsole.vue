@@ -54,6 +54,18 @@ function fmt(ts: number) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+// ── Copy all entries to clipboard ────────────────────────────────────────────
+const copyFeedback = ref(false)
+function copyLog() {
+  const text = entries.value
+    .map(e => `${fmt(e.ts)}  ${e.level.toUpperCase().padEnd(5)}  ${e.msg}`)
+    .join('\n')
+  navigator.clipboard.writeText(text).then(() => {
+    copyFeedback.value = true
+    setTimeout(() => { copyFeedback.value = false }, 1500)
+  })
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(connect)
 onUnmounted(disconnect)
@@ -70,6 +82,7 @@ onUnmounted(disconnect)
     <div class="log-toolbar">
       <span class="log-title">Console</span>
       <span class="log-count">{{ entries.length }} entries</span>
+      <button class="log-btn" title="Copy all to clipboard" @click="copyLog">{{ copyFeedback ? 'Copied!' : 'Copy' }}</button>
       <button class="log-btn" title="Clear" @click="clearLog">Clear</button>
       <button class="log-btn log-btn--close" title="Close" @click="emit('update:open', false)">✕</button>
     </div>
@@ -156,6 +169,7 @@ onUnmounted(disconnect)
   line-height: 1.4;
 }
 .log-btn:hover { background: #222; color: #aaa; }
+.log-btn + .log-btn { margin-left: 0.25rem; }
 .log-btn--close { margin-left: 0.25rem; }
 
 /* ── Log body ──────────────────────────────────────────────────────────────── */

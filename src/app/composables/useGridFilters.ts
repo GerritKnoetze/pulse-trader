@@ -1,6 +1,6 @@
 import { ref, computed, watch } from 'vue'
 import type { ScannerRow } from '~/types/scanner'
-import { useScanner } from '~/composables/useScanner'
+import { useScanner, registerScanRowsLoadedCallback } from '~/composables/useScanner'
 
 const COL_FILTERS_KEY = 'pulse-scanner-col-filters'
 
@@ -22,6 +22,10 @@ const columnFilters = ref<Record<string, string[]>>({})
 watch(columnFilters, (val) => {
   localStorage.setItem(COL_FILTERS_KEY, JSON.stringify(val))
 }, { deep: true })
+
+// Clear all column filters whenever a fresh scan loads new rows so that
+// values persisted from a previous session don’t silently hide all results.
+registerScanRowsLoadedCallback(() => { columnFilters.value = {} })
 
 export function cellDisplayValue(key: keyof ScannerRow, row: ScannerRow): string {
   const v = row[key]

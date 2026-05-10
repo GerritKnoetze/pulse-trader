@@ -102,7 +102,9 @@ function initColumns() {
 }
 
 function onColDragStart(e: DragEvent, idx: number) {
-  dragSource.value = idx
+  // idx is the visible-column index; store the colOrder index instead
+  const key = orderedColumns.value[idx]?.key as string | undefined
+  dragSource.value = key !== undefined ? colOrder.value.indexOf(key) : null
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
 }
 
@@ -114,11 +116,18 @@ function onColDragOver(e: DragEvent, idx: number) {
 
 function onColDrop(e: DragEvent, idx: number) {
   e.preventDefault()
-  if (dragSource.value !== null && dragSource.value !== idx) {
+  // idx is the visible-column index; map to colOrder key then find its order index
+  const targetKey = orderedColumns.value[idx]?.key as string | undefined
+  if (dragSource.value !== null && targetKey !== undefined) {
     const newOrder = [...colOrder.value]
-    const moved = newOrder.splice(dragSource.value, 1)[0]
-    if (moved !== undefined) newOrder.splice(idx, 0, moved)
-    colOrder.value = newOrder
+    const [moved] = newOrder.splice(dragSource.value, 1)
+    if (moved !== undefined) {
+      // After the splice, find the target key's new position and insert before it
+      const insertAt = newOrder.indexOf(targetKey)
+      if (insertAt >= 0) newOrder.splice(insertAt, 0, moved)
+      else newOrder.push(moved)
+      colOrder.value = newOrder
+    }
   }
   dragSource.value = null
   dragOverIdx.value = null

@@ -60,6 +60,9 @@ const lastScan           = ref<string>('')
 const nextCursor         = ref<string | null>(null)
 const isLoadingMore      = ref(false)
 const wsStatus           = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+// Tracks the *server-side* WS relay status (pushed via SSE messages).
+// Separate from wsStatus which only reflects the EventSource connection.
+const serverWsStatus     = ref<'disconnected' | 'connecting' | 'authenticating' | 'connected' | 'error'>('disconnected')
 
 let eventSource: EventSource | null = null
 let scanDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -138,6 +141,11 @@ function setSortBy(key: keyof ScannerRow) {
   persist()
 }
 
+// Column-filter clear callback — set by useGridFilters so runScan can clear
+// stale column filters whenever fresh scan rows are loaded.
+let onScanRowsLoaded: (() => void) | null = null
+export function registerScanRowsLoadedCallback(cb: () => void) { onScanRowsLoaded = cb }
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 async function runScan(append = false) {
@@ -157,6 +165,9 @@ async function runScan(append = false) {
     universeCount.value = data.universeCount
     lastScan.value     = data.lastScan
     nextCursor.value   = data.nextCursor
+    // Clear stale column filters so rows from the new scan are not silently
+    // filtered out by values that no longer exist in the result set.
+    if (!append) onScanRowsLoaded?.()
   } catch (err) {
     scanError.value = err instanceof Error ? err.message : 'Scan failed'
   } finally {
@@ -192,18 +203,30 @@ function connectLive() {
   if (eventSource) return
   wsStatus.value = 'connecting'
   eventSource = new EventSource('/api/scanner/subscribe')
+
   eventSource.onopen = () => { wsStatus.value = 'connected' }
+
   eventSource.onmessage = (e: MessageEvent) => {
     try {
-      const msg = JSON.parse(e.data as string) as { type: 'snapshot'; rows: ScannerRow[] } | { type: 'update'; row: ScannerRow }
+      const msg = JSON.parse(e.data as string) as
+        | { type: 'snapshot'; rows: ScannerRow[] }
+        | { type: 'update'; row: ScannerRow }
+        | { type: 'wsStatus'; status: string }
+
       if (msg.type === 'snapshot') {
-        if (rows.value.length === 0) rows.value = msg.rows
+        // Always adopt a non-empty snapshot from the server so reconnects
+        // pick up the latest cache.  Ignore empty snapshots (server restarted
+        // with cold cache — the onopen rescan will repopulate shortly).
+        if (msg.rows.length > 0) rows.value = msg.rows
       } else if (msg.type === 'update') {
         const idx = rows.value.findIndex(r => r.symbol === msg.row.symbol)
-        if (idx >= 0) rows.value[idx] = { ...rows.value[idx]!, ...msg.row }
+        if (idx >= 0) rows.value.splice(idx, 1, { ...rows.value[idx]!, ...msg.row })
+      } else if (msg.type === 'wsStatus') {
+        serverWsStatus.value = msg.status as typeof serverWsStatus.value
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore malformed frames */ }
   }
+
   eventSource.onerror = () => { wsStatus.value = 'error' }
 }
 
@@ -219,7 +242,7 @@ export function useScanner() {
   return {
     timeframe, mode, activeQuickFilter, sortKey, sortDir,
     rows, isScanning, scanError, total, universeCount, lastScan,
-    nextCursor, isLoadingMore, wsStatus,
+    nextCursor, isLoadingMore, wsStatus, serverWsStatus,
     filteredRows, totalCount, showingCount,
     allRows: rows,
     initScanner, setTimeframe, setMode, toggleQuickFilter, clearFilters, setSortBy,

@@ -1,11 +1,41 @@
 <script setup lang="ts">
-import { ViewColumnsIcon } from '@heroicons/vue/24/outline'
+import { ref } from 'vue'
+import { ViewColumnsIcon, Bars3Icon } from '@heroicons/vue/24/outline'
 import { useGridColumns } from '~/composables/useGridColumns'
 
 defineProps<{ open: boolean }>()
 defineEmits<{ close: [] }>()
 
-const { COLUMNS, hiddenCols, toggleColVisibility } = useGridColumns()
+const {
+  COLUMNS,
+  orderedColumns,
+  hiddenCols,
+  toggleColVisibility,
+  onColDragStart,
+  onColDragOver,
+  onColDrop,
+  onColDragEnd,
+  dragOverIdx,
+} = useGridColumns()
+
+// Local dragging state so the drawer list shows the drag-over highlight
+const localDragOver = ref<number | null>(null)
+
+function handleDragStart(e: DragEvent, idx: number) {
+  onColDragStart(e, idx)
+}
+function handleDragOver(e: DragEvent, idx: number) {
+  localDragOver.value = idx
+  onColDragOver(e, idx)
+}
+function handleDrop(e: DragEvent, idx: number) {
+  localDragOver.value = null
+  onColDrop(e, idx)
+}
+function handleDragEnd() {
+  localDragOver.value = null
+  onColDragEnd()
+}
 </script>
 
 <template>
@@ -18,20 +48,48 @@ const { COLUMNS, hiddenCols, toggleColVisibility } = useGridColumns()
       <button class="drawer-close-btn" @click="$emit('close')">✕</button>
     </div>
     <div class="drawer-section drawer-section-scroll">
-      <div class="drawer-section-label">Toggle Columns</div>
-      <label
-        v-for="col in COLUMNS"
+      <div class="drawer-section-label">Drag to reorder · toggle to show/hide</div>
+      <div
+        v-for="(col, i) in orderedColumns"
         :key="col.key"
         class="col-toggle-row"
-        :class="{ hidden: hiddenCols.has(col.key as string) }"
+        :class="{
+          hidden: hiddenCols.has(col.key as string),
+          'drag-over': localDragOver === i,
+        }"
+        draggable="true"
+        @dragstart="handleDragStart($event, i)"
+        @dragover="handleDragOver($event, i)"
+        @drop="handleDrop($event, i)"
+        @dragend="handleDragEnd"
       >
-        <input
-          type="checkbox"
-          :checked="!hiddenCols.has(col.key as string)"
-          @change="toggleColVisibility(col.key as string)"
-        />
-        <span class="col-toggle-label">{{ col.label }}</span>
-      </label>
+        <Bars3Icon class="col-drag-handle" />
+        <label class="col-toggle-label-wrap">
+          <input
+            type="checkbox"
+            :checked="!hiddenCols.has(col.key as string)"
+            @change="toggleColVisibility(col.key as string)"
+          />
+          <span class="col-toggle-label">{{ col.label }}</span>
+        </label>
+      </div>
+      <!-- Hidden columns not yet in orderedColumns (fully hidden) -->
+      <template v-for="col in COLUMNS" :key="'h-' + col.key">
+        <div
+          v-if="hiddenCols.has(col.key as string)"
+          class="col-toggle-row hidden"
+        >
+          <Bars3Icon class="col-drag-handle col-drag-handle--disabled" />
+          <label class="col-toggle-label-wrap">
+            <input
+              type="checkbox"
+              :checked="false"
+              @change="toggleColVisibility(col.key as string)"
+            />
+            <span class="col-toggle-label">{{ col.label }}</span>
+          </label>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -123,18 +181,50 @@ const { COLUMNS, hiddenCols, toggleColVisibility } = useGridColumns()
 .col-toggle-row {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.35rem 0.2rem;
+  gap: 0.45rem;
+  padding: 0.32rem 0.2rem;
   border-radius: 4px;
-  cursor: pointer;
+  cursor: grab;
   transition: background 0.1s;
+  border: 1px solid transparent;
 }
 
 .col-toggle-row:hover {
   background: rgba(255,255,255,0.05);
 }
 
-.col-toggle-row input[type="checkbox"] {
+.col-toggle-row.drag-over {
+  border-color: #c87628;
+  background: rgba(200, 118, 40, 0.1);
+}
+
+.col-drag-handle {
+  width: 14px;
+  height: 14px;
+  color: #444;
+  flex-shrink: 0;
+  cursor: grab;
+  transition: color 0.1s;
+}
+
+.col-toggle-row:hover .col-drag-handle {
+  color: #777;
+}
+
+.col-drag-handle--disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.col-toggle-label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  cursor: pointer;
+}
+
+.col-toggle-label-wrap input[type="checkbox"] {
   accent-color: #c87628;
   width: 13px;
   height: 13px;

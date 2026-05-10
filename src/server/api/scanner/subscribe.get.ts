@@ -1,47 +1,45 @@
+import { createEventStream } from 'h3'
 import { getScannerEngine } from '../../services/scanner-engine'
 
 export default defineEventHandler((event) => {
-  const res = event.node.res
-  const req = event.node.req
-
-  res.writeHead(200, {
-    'Content-Type':      'text/event-stream',
-    'Cache-Control':     'no-cache, no-transform',
-    'Connection':        'keep-alive',
-    'X-Accel-Buffering': 'no',
-  })
-
+  const stream = createEventStream(event)
   const engine = getScannerEngine()
+  const id     = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
+  // Write helper — serialises a JSON payload as an SSE data frame
   const write = (data: object) => {
-    try {
-      res.write(`data: ${JSON.stringify(data)}\n\n`)
-    } catch { /* client gone */ }
+    stream.push({ data: JSON.stringify(data) }).catch(() => {})
   }
 
-  // Send current rows immediately as snapshot
+  // Register this client so the engine can fan-out row updates
+  engine.addSseClient(id, write)
+
+  // Keep-alive ping every 25 s (named event — EventSource.onmessage ignores it)
+  const ping = setInterval(() => {
+    stream.push({ event: 'ping', data: 'ping' }).catch(() => clearInterval(ping))
+  }, 25_000)
+
+  // Unregister + stop ping when the client disconnects
+  stream.onClosed(() => {
+    clearInterval(ping)
+    engine.removeSseClient(id)
+  })
+
+  // ── IMPORTANT: call stream.send() FIRST, THEN push data ──────────────────
+  // stream.send() starts the HTTP pipe (TransformStream → Node response).
+  // Pushing data before send() fills the TransformStream buffer and can stall
+  // indefinitely (awaiting a reader that doesn't exist yet).
+  const sendPromise = stream.send()
+
+  // Push current cached rows as initial snapshot (non-blocking, fires into pipe)
   const initial = engine.getCachedRows()
   if (initial.length > 0) {
     write({ type: 'snapshot', rows: initial })
   }
 
-  // Register SSE client
-  const id = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  engine.addSseClient(id, write)
+  // Tell the client the current server-side WS relay status immediately so the
+  // status indicator is accurate from the first frame.
+  write({ type: 'wsStatus', status: engine.getWsStatus() })
 
-  // Keep-alive ping every 25 s
-  const ping = setInterval(() => {
-    try { res.write(': ping\n\n') } catch { clearInterval(ping) }
-  }, 25_000)
-
-  const cleanup = () => {
-    clearInterval(ping)
-    engine.removeSseClient(id)
-  }
-
-  req.on('close', cleanup)
-  req.on('error', cleanup)
-
-  // Keep the connection open indefinitely
-  return new Promise<void>(() => {})
+  return sendPromise
 })

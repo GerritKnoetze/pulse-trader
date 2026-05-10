@@ -48,7 +48,9 @@ const supportOpen = ref(false)
       </nav>
 
       <div class="header-actions">
-        <MarketStatusBar />
+        <ClientOnly>
+          <MarketStatusBar />
+        </ClientOnly>
       </div>
     </div>
   </header>

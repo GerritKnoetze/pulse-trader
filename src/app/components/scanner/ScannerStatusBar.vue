@@ -5,7 +5,7 @@ import { useScanner } from '~/composables/useScanner'
 const props = defineProps<{ logOpen?: boolean }>()
 const emit  = defineEmits<{ (e: 'toggle-log'): void }>()
 
-const { totalCount, showingCount, universeCount, lastScan, isScanning, wsStatus } = useScanner()
+const { totalCount, showingCount, universeCount, lastScan, isScanning, wsStatus, serverWsStatus } = useScanner()
 
 const lastScanFormatted = computed(() => {
   if (!lastScan.value) return null
@@ -15,12 +15,24 @@ const lastScanFormatted = computed(() => {
 })
 
 const wsLabel = computed(() => {
-  switch (wsStatus.value) {
-    case 'connected':    return 'Live'
-    case 'connecting':   return 'Connecting…'
-    case 'error':        return 'WS Error'
-    default:             return 'Offline'
+  // If the EventSource itself isn't connected, show that first
+  if (wsStatus.value === 'connecting') return 'Connecting…'
+  if (wsStatus.value === 'error')      return 'SSE Error'
+  if (wsStatus.value !== 'connected')  return 'Offline'
+  // EventSource is up — reflect the actual server-side WS relay status
+  switch (serverWsStatus.value) {
+    case 'connected':      return 'Live'
+    case 'connecting':
+    case 'authenticating': return 'WS Connecting…'
+    case 'error':          return 'WS Error'
+    default:               return 'WS Offline'
   }
+})
+
+// CSS class for the dot — use serverWsStatus when EventSource is connected
+const wsDotClass = computed(() => {
+  if (wsStatus.value !== 'connected') return `ws-status--${wsStatus.value}`
+  return `ws-status--${serverWsStatus.value}`
 })
 </script>
 
@@ -46,7 +58,7 @@ const wsLabel = computed(() => {
 
     <span class="log-toggle-hint">{{ logOpen ? '▼ Console' : '▲ Console' }}</span>
 
-    <span class="ws-status" :class="`ws-status--${wsStatus}`">
+    <span class="ws-status" :class="wsDotClass">
       <span class="ws-dot" />
       {{ wsLabel }}
     </span>

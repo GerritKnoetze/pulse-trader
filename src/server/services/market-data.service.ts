@@ -247,7 +247,7 @@ export async function syncMarketData(
  */
 export async function searchTickers(query: string): Promise<MassiveTickerResult[]> {
   const client = createClient();
-  const response = await client.getReferenceTickersV3({
+  const response = await client.listTickers({
     search: query,
     active: 'true',
     market: 'stocks',

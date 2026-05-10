@@ -54,6 +54,8 @@ interface IntradayState {
   // live price/volume data
   lastPrice?: number
   accVolume?: number
+  // previous session close — stored at scan time, used to compute live chg$/chg%
+  prevDayClose?: number
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -77,26 +79,27 @@ class ScannerEngine {
     // Wire WS tick handler
     getWsRelay().onTick('scanner-engine', (tick) => this.onTick(tick as AggregateTick))
 
-    // Log WS status changes — suppress transient reconnect noise:
-    // • 'connecting' / 'authenticating' are not logged (expected during reconnect cycle)
-    // • 'connected' is logged immediately
-    // • 'disconnected' is only logged after 3 s of staying disconnected
-    //   (so a quick reconnect loop doesn't flood the console)
+    // Log WS status changes and fan-out to SSE clients so the browser status
+    // indicator accurately reflects the server-side WS relay state.
     let disconnectLogTimer: ReturnType<typeof setTimeout> | null = null
     getWsRelay().onStatus('scanner-engine-log', (status) => {
       if (disconnectLogTimer) { clearTimeout(disconnectLogTimer); disconnectLogTimer = null }
       if (status === 'connected') {
         appLog('WS connected — live ticks active')
+        this.broadcastStatus(status)
       } else if (status === 'error') {
         appLog('WS error — check API key / network', 'error')
+        this.broadcastStatus(status)
       } else if (status === 'disconnected') {
         disconnectLogTimer = setTimeout(() => {
           disconnectLogTimer = null
           appLog('WS disconnected', 'warn')
+          this.broadcastStatus('disconnected')
         }, 3_000)
       }
-      // 'connecting' and 'authenticating' intentionally not logged
+      // 'connecting' and 'authenticating' intentionally not logged / broadcast
     })
+
   }
 
   // ── Public API ──────────────────────────────────────────────────────────
@@ -135,6 +138,17 @@ class ScannerEngine {
     this.lastSortedCandidates = candidates
     this.lastCriteria = criteria
 
+    // Pre-populate prevDayClose for all tier1+tier2 symbols so onTick can
+    // compute live chgDollar / chgPct without snapshot data at tick time.
+    for (const t of candidates.slice(0, TIER1_SIZE + TIER2_SIZE)) {
+      let state = this.intraday.get(t.ticker)
+      if (!state) {
+        state = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
+        this.intraday.set(t.ticker, state)
+      }
+      if (t.prevDay.c) state.prevDayClose = t.prevDay.c
+    }
+
     // Pagination: find cursor position
     let startIdx = 0
     if (cursor) {
@@ -172,12 +186,15 @@ class ScannerEngine {
 
   getCachedRows(): ScannerRow[] { return [...this.rowCache.values()] }
 
+  getWsStatus(): string { return getWsRelay().getStatus() }
+
   getStatus() {
     return {
-      wsStatus: getWsRelay().getStatus(),
+      wsStatus:        getWsRelay().getStatus(),
       wsSubscriptions: getWsRelay().getSubscriptionCount(),
-      cachedRows: this.rowCache.size,
-      lastScan: this.lastScanAt,
+      cachedRows:      this.rowCache.size,
+      sseClients:      this.sseClients.size,
+      lastScan:        this.lastScanAt,
     }
   }
 
@@ -201,8 +218,8 @@ class ScannerEngine {
     try {
       const dailyBars = await this.getDailyBars(ticker.ticker)
       if (dailyBars.length < 2) {
-        appLog(`${ticker.ticker}: insufficient daily bars (${dailyBars.length}) — minimal row`, 'warn')
-        return this.buildMinimalRow(ticker)
+        appLog(`${ticker.ticker}: insufficient daily bars (${dailyBars.length}) — skipped`, 'warn')
+        return null
       }
 
       // Minute bars are optional — a failure (rate limit, no intraday data, etc.)
@@ -217,9 +234,10 @@ class ScannerEngine {
 
       const ta = computeTA(dailyBars, minuteBars.length > 0 ? minuteBars : undefined)
 
-      // Use live WS price if available, else snapshot price
+      // Use live WS price if available, else snapshot price (|| chain handles pre-market zeros)
       const intraState = this.intraday.get(ticker.ticker)
-      const last = intraState?.lastPrice ?? ticker.lastTrade?.p ?? ticker.day.c
+      const last = intraState?.lastPrice || ticker.lastTrade?.p || ticker.day.c || ticker.prevDay.c
+      if (!last) return null
 
       // Use accumulated volume for RVOL
       const todayVol = intraState?.accVolume ?? ticker.min?.av ?? ticker.day.v
@@ -250,8 +268,10 @@ class ScannerEngine {
     }
   }
 
-  private buildMinimalRow(ticker: SnapshotTicker): ScannerRow {
-    const last = ticker.lastTrade?.p ?? ticker.day.c
+
+  private buildMinimalRow(ticker: SnapshotTicker): ScannerRow | null {
+    const last = ticker.lastTrade?.p || ticker.day.c || ticker.prevDay.c
+    if (!last) return null
     return {
       id: ticker.ticker,
       symbol: ticker.ticker,
@@ -299,8 +319,13 @@ class ScannerEngine {
   // ── Private: WS tick handling ─────────────────────────────────────────────
 
   private onTick(tick: AggregateTick): void {
-    if (tick.ev !== 'A' && tick.ev !== 'AM') return
+    // Accept A (per-second aggregate), AM (per-minute aggregate), and T (trade)
+    if (tick.ev !== 'A' && tick.ev !== 'AM' && tick.ev !== 'T') return
     const sym = tick.sym
+
+    // Trade events use `p` for price; aggregate events use `c`
+    const price = tick.c || tick.p || 0
+    if (!price) return
 
     // Update live price/volume state
     let state = this.intraday.get(sym)
@@ -308,7 +333,7 @@ class ScannerEngine {
       state = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
       this.intraday.set(sym, state)
     }
-    state.lastPrice = tick.c
+    state.lastPrice = price
     state.accVolume = tick.av
 
     if (tick.ev === 'AM') {
@@ -327,8 +352,6 @@ class ScannerEngine {
       try { persistMinuteBar(bar) } catch { /* non-critical */ }
 
       // Re-derive all intraday directions from the updated 1-min bar set in CandleCache.
-      // This is the only correct approach — a single 1-min bar closing red does NOT make
-      // the 15-min or 60-min bar bearish; those depend on their own aggregated close vs open.
       const minuteBars = getCandleCache().get(sym, 'minute') ?? [bar]
       const dir1  = bar.close >= bar.open ? 'up' : 'down'
       const dir5  = intradayDir(aggregateTo5min(minuteBars))
@@ -345,7 +368,13 @@ class ScannerEngine {
     // Patch cached row if present
     const row = this.rowCache.get(sym)
     if (row) {
-      row.last = Math.round(tick.c * 100) / 100
+      row.last = Math.round(price * 100) / 100
+      // Recompute change$ and change% from the stored previous-day close
+      if (state.prevDayClose) {
+        const diff = price - state.prevDayClose
+        row.chgDollar = Math.round(diff * 100) / 100
+        row.chgPct    = Math.round((diff / state.prevDayClose) * 10000) / 100
+      }
       if (tick.ev === 'AM') {
         row.mtf['1']  = state['1']
         row.mtf['5']  = state['5']
@@ -359,6 +388,13 @@ class ScannerEngine {
 
   private broadcastUpdate(row: ScannerRow): void {
     const payload = { type: 'update', row }
+    for (const writer of this.sseClients.values()) {
+      try { writer(payload) } catch { /* ignore disconnected clients */ }
+    }
+  }
+
+  private broadcastStatus(status: string): void {
+    const payload = { type: 'wsStatus', status }
     for (const writer of this.sseClients.values()) {
       try { writer(payload) } catch { /* ignore disconnected clients */ }
     }
@@ -386,7 +422,9 @@ function intradayDir(bars: BarInput[]): MtfSignal {
 
 function filterSnapshot(tickers: SnapshotTicker[], criteria: ScanCriteria): SnapshotTicker[] {
   return tickers.filter(t => {
-    const price = t.lastTrade?.p ?? t.day.c
+    // Pre-market: day.c is 0 (no regular-session close yet).  Fall through to
+    // prevDay.c so the snapshot is still usable before the open.
+    const price = t.lastTrade?.p || t.day.c || t.prevDay.c
     const chg   = t.todaysChangePerc
     const vol   = t.min?.av ?? t.day.v
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { ChevronDownIcon, XMarkIcon, FunnelIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ChevronDownIcon, XMarkIcon, FunnelIcon, ArrowPathIcon, MagnifyingGlassIcon } from '@heroicons/vue/24/outline'
+import ScannerSymbolSearch from '~/components/scanner/ScannerSymbolSearch.vue'
 import { useScanner } from '~/composables/useScanner'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 import { useGridFilters } from '~/composables/useGridFilters'
@@ -21,6 +22,7 @@ const TIMEFRAMES: ScannerTimeframe[] = ['1', '5', '15', '30', '60', 'D', 'W', 'M
 
 const quickFiltersOpen = ref(false)
 const gridOptionsOpen = ref(false)
+const symbolSearchOpen = ref(false)
 const activePresetName = ref<string | null>(null)
 
 const activeFilterLabel = computed(() => {
@@ -43,10 +45,31 @@ function selectPreset(id: string) {
   activePresetName.value = preset.name
   quickFiltersOpen.value = false
 }
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    e.preventDefault()
+    symbolSearchOpen.value = true
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 </script>
 
 <template>
   <div class="scanner-toolbar">
+    <!-- Symbol search button -->
+    <button
+      class="symbol-search-btn"
+      title="Search symbol (Ctrl+K)"
+      @click="symbolSearchOpen = true"
+    >
+      <MagnifyingGlassIcon class="btn-icon" />
+    </button>
+
+    <div class="toolbar-divider" />
+
     <!-- Time frame buttons -->
     <div class="tf-group">
       <button
@@ -165,6 +188,8 @@ function selectPreset(id: string) {
       </div>
     </div>
   </div>
+
+  <ScannerSymbolSearch v-model:open="symbolSearchOpen" />
 </template>
 
 <style scoped>
@@ -492,6 +517,25 @@ function selectPreset(id: string) {
   left: 0;
   right: 0;
   height: 8px;
+}
+
+/* Symbol search button */
+.symbol-search-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #c87628;
+  border: none;
+  color: #fff;
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.symbol-search-btn:hover {
+  background: #d9892e;
 }
 
 .btn-icon {

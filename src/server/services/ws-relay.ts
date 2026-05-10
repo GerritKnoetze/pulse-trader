@@ -15,17 +15,19 @@ import { getBrokerCredentials } from './snapshot-cache'
 export type WsStatus = 'disconnected' | 'connecting' | 'authenticating' | 'connected' | 'error'
 
 export interface AggregateTick {
-  ev: 'A' | 'AM'
+  ev: 'A' | 'AM' | 'T'
   sym: string
   o: number    // open
   h: number    // high
   l: number    // low
-  c: number    // close
+  c: number    // close / last price
   v: number    // volume this tick
   av: number   // accumulated volume today
   vw: number   // vwap
   s: number    // start timestamp
   e: number    // end timestamp
+  p?: number   // trade price (T events use p instead of c)
+  x?: number   // exchange id (T events)
 }
 
 export interface QuoteTick {
@@ -56,6 +58,7 @@ class WsRelay {
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private stableTimer: ReturnType<typeof setTimeout> | null = null   // resets backoff only after 15s stable
   private stopping = false
+
 
   private readonly RECONNECT_BASE_MS = 1_000
   private readonly RECONNECT_MAX_MS  = 30_000
@@ -93,14 +96,13 @@ class WsRelay {
 
         for (const msg of data) {
           const ev = msg['ev'] as string
-          // Auth response
           if (ev === 'status') {
             const msgStatus = msg['status'] as string
-            if (msgStatus === 'auth_success' || msgStatus === 'connected') {
+
+            if (msgStatus === 'auth_success') {
+              // Auth confirmed — now we can receive market data
               this.setStatus('connected')
-              // Only reset the backoff counter after the connection has been stable for
-              // 15 seconds.  Resetting immediately allows the server to keep us in a
-              // 1-second reconnect loop (e.g. when there are no subscriptions yet).
+              // Reset backoff only after 15 s of stability
               if (this.stableTimer) clearTimeout(this.stableTimer)
               this.stableTimer = setTimeout(() => {
                 this.reconnectAttempts = 0
@@ -111,11 +113,12 @@ class WsRelay {
               if (this.subscriptions.size > 0) {
                 this.sendSubscribe([...this.subscriptions])
               }
+            } else if (msgStatus === 'auth_failed') {
+              this.setStatus('error')
             }
             continue
           }
-          // Market data events
-          if (ev === 'A' || ev === 'AM' || ev === 'Q') {
+          if (ev !== 'status') {
             const tick = msg as unknown as MarketTick
             for (const handler of this.tickHandlers.values()) {
               try { handler(tick) } catch { /* ignore handler errors */ }
