@@ -6,6 +6,8 @@ import { useGridFilters } from '~/composables/useGridFilters'
 import { useGridLayouts } from '~/composables/useGridLayouts'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 import ScannerLogConsole from '~/components/scanner/ScannerLogConsole.vue'
+import ScannerSetupsPanel from '~/components/scanner/ScannerSetupsPanel.vue'
+import ScannerAlertsDrawer from '~/components/scanner/ScannerAlertsDrawer.vue'
 
 const { clearFilters, initScanner, runScan, connectLive, disconnectLive } = useScanner()
 const { initColumns, resetColumns } = useGridColumns()
@@ -13,10 +15,10 @@ const { initFilters, resetFilters, closeFilterDropdown } = useGridFilters()
 const { initLayouts } = useGridLayouts()
 const { initPresets } = useGridFilterPresets()
 
-const activePanel = ref<'columns' | 'layouts' | 'my-filters' | 'criteria' | null>(null)
+const activePanel = ref<'columns' | 'layouts' | 'my-filters' | 'criteria' | 'setups' | 'alerts' | null>(null)
 const logOpen = ref(false)
 
-function togglePanel(p: 'columns' | 'layouts' | 'my-filters' | 'criteria') {
+function togglePanel(p: 'columns' | 'layouts' | 'my-filters' | 'criteria' | 'setups' | 'alerts') {
   activePanel.value = activePanel.value === p ? null : p
 }
 
@@ -58,6 +60,8 @@ onUnmounted(() => {
     <ScannerColumnsDrawer :open="activePanel === 'columns'" @close="activePanel = null" />
     <ScannerLayoutsDrawer :open="activePanel === 'layouts'" @close="activePanel = null" @reset="handleReset" />
     <ScannerMyFiltersDrawer :open="activePanel === 'my-filters'" @close="activePanel = null" />
+    <ScannerSetupsPanel :open="activePanel === 'setups'" @close="activePanel = null" />
+    <ScannerAlertsDrawer :open="activePanel === 'alerts'" @close="activePanel = null" />
     <ScannerSideStrip
       :active-panel="activePanel"
       @toggle-panel="togglePanel"

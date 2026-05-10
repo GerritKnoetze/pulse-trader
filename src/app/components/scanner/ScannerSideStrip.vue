@@ -5,18 +5,22 @@ import {
   CircleStackIcon,
   FunnelIcon,
   AdjustmentsHorizontalIcon,
+  BoltIcon,
+  BellIcon,
 } from '@heroicons/vue/24/outline'
 import { useScanCriteria } from '~/composables/useScanCriteria'
+import { useStratSetups } from '~/composables/useStratSetups'
 
 const props = defineProps<{
-  activePanel: 'columns' | 'layouts' | 'my-filters' | 'criteria' | null
+  activePanel: 'columns' | 'layouts' | 'my-filters' | 'criteria' | 'setups' | 'alerts' | null
 }>()
 
 const emit = defineEmits<{
-  togglePanel: ['columns' | 'layouts' | 'my-filters' | 'criteria']
+  togglePanel: ['columns' | 'layouts' | 'my-filters' | 'criteria' | 'setups' | 'alerts']
 }>()
 
 const { activeCount: criteriaCount } = useScanCriteria()
+const { setupBadgeCount, alertBadgeCount, unreadAlertCount } = useStratSetups()
 const isMounted = ref(false)
 onMounted(() => { isMounted.value = true })
 </script>
@@ -65,6 +69,32 @@ onMounted(() => { isMounted.value = true })
     >
       <FunnelIcon class="strip-icon" />
       <span class="strip-label">My Filters</span>
+    </button>
+    <!-- Setups -->
+    <button
+      class="side-strip-btn"
+      :class="{ active: props.activePanel === 'setups' }"
+      title="Live Setups"
+      @click="$emit('togglePanel', 'setups')"
+    >
+      <BoltIcon class="strip-icon" />
+      <span class="strip-label">
+        Setups
+        <span v-if="isMounted && setupBadgeCount > 0" class="strip-badge">{{ setupBadgeCount }}</span>
+      </span>
+    </button>
+    <!-- Alerts -->
+    <button
+      class="side-strip-btn"
+      :class="{ active: props.activePanel === 'alerts' }"
+      title="Alerts"
+      @click="$emit('togglePanel', 'alerts')"
+    >
+      <BellIcon class="strip-icon" />
+      <span class="strip-label">
+        Alerts
+        <span v-if="isMounted && alertBadgeCount > 0" class="strip-badge strip-badge-alert">{{ alertBadgeCount }}</span>
+      </span>
     </button>
   </div>
 </template>
@@ -136,5 +166,9 @@ onMounted(() => { isMounted.value = true })
   padding: 0 3px;
   writing-mode: horizontal-tb;
   line-height: 1;
+}
+
+.strip-badge-alert {
+  background: #c84040;
 }
 </style>

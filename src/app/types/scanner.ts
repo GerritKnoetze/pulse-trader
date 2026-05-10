@@ -4,6 +4,29 @@ export type ScannerCategory = 'Continuation' | 'Continuation+' | 'Inside' | 'Rev
 export type MtfSignal = 'up' | 'down'
 export interface MtfState { '1': MtfSignal; '5': MtfSignal; '15': MtfSignal; '30': MtfSignal; '60': MtfSignal; 'D': MtfSignal; 'W': MtfSignal; 'M': MtfSignal; 'Q': MtfSignal; 'Y': MtfSignal }
 
+export type SetupQuality = 'A+' | 'A' | 'B' | 'C'
+export type TfContinuityStatus = 'full' | 'partial' | 'conflicted' | 'blocked'
+
+export interface StratSetup {
+  symbol:          string
+  signalTf:        ScannerTimeframe
+  combo:           string
+  comboType:       'Reversal' | 'Continuation' | 'Reversal+' | 'Continuation+'
+  direction:       'long' | 'short'
+  quality:         SetupQuality
+  entryPrice:      number
+  stop:            number
+  targets:         number[]
+  rr:              number
+  atrRisk:         number
+  tfContinuity:    TfContinuityStatus
+  higherTfBlocked: boolean
+  inForce:         boolean
+  ftfc:            boolean
+  detectedAt:      string
+  alertSent:       boolean
+}
+
 /** Scan criteria sent to the server to filter the full-market snapshot */
 export interface ScanCriteria {
   minPrice?:          number | undefined
@@ -33,6 +56,7 @@ export interface ScannerRow {
   chgPct: number
   atrDollar: number
   mtf: MtfState
+  setup?: StratSetup
 }
 
 export type SortDirection = 'asc' | 'desc' | null

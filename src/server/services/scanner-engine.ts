@@ -14,8 +14,9 @@
  * 8. WS AM (per-minute) events persist 1-min bars to SQLite + CandleCache in real-time
  */
 
-import type { ScannerRow, MtfSignal } from '../../app/types/scanner'
+import type { ScannerRow, MtfSignal, StratSetup } from '../../app/types/scanner'
 import type { ScanCriteria } from '../../app/types/scanner'
+import { scoreSetup } from './strat-setup-engine'
 import type { SnapshotTicker } from './snapshot-cache'
 import type { BarInput } from '../database/repositories/market-data-repository'
 import type { AggregateTick } from './ws-relay'
@@ -66,6 +67,9 @@ class ScannerEngine {
 
   // SSE clients
   private sseClients = new Map<string, SseWriter>()
+
+  // Alert deduplication: key = `${symbol}-${signalTf}-${combo}`
+  private alertsSent = new Set<string>()
 
   // Intraday data from WS (updated every tick)
   private intraday = new Map<string, IntradayState>()
@@ -186,6 +190,12 @@ class ScannerEngine {
 
   getCachedRows(): ScannerRow[] { return [...this.rowCache.values()] }
 
+  getActiveSetups(): StratSetup[] {
+    return [...this.rowCache.values()]
+      .filter(r => r.setup != null)
+      .map(r => r.setup!)
+  }
+
   getWsStatus(): string { return getWsRelay().getStatus() }
 
   getStatus() {
@@ -243,7 +253,7 @@ class ScannerEngine {
       const todayVol = intraState?.accVolume ?? ticker.min?.av ?? ticker.day.v
       const rvol = computeRVOL(todayVol, ta.avgVol30)
 
-      return {
+      const row: ScannerRow = {
         id: ticker.ticker,
         symbol: ticker.ticker,
         last: Math.round(last * 100) / 100,
@@ -263,6 +273,15 @@ class ScannerEngine {
         signal: ta.signal,
         category: ta.category,
       }
+
+      // Score Strat setup and attach to row
+      const setup = scoreSetup(row, dailyBars)
+      if (setup) {
+        row.setup = setup
+        this.maybeAlert(setup)
+      }
+
+      return row
     } catch {
       return this.buildMinimalRow(ticker)
     }
@@ -398,6 +417,23 @@ class ScannerEngine {
     for (const writer of this.sseClients.values()) {
       try { writer(payload) } catch { /* ignore disconnected clients */ }
     }
+  }
+
+  private broadcastSetupAlert(setup: StratSetup): void {
+    const payload = { type: 'setupAlert', setup }
+    for (const writer of this.sseClients.values()) {
+      try { writer(payload) } catch { /* ignore disconnected clients */ }
+    }
+  }
+
+  private maybeAlert(setup: StratSetup): void {
+    // Only alert on high-quality setups
+    if (setup.quality !== 'A+' && setup.quality !== 'A') return
+    const key = `${setup.symbol}-${setup.signalTf}-${setup.combo}`
+    if (this.alertsSent.has(key)) return
+    this.alertsSent.add(key)
+    setup.alertSent = true
+    this.broadcastSetupAlert(setup)
   }
 
   // ── Private: WS subscription management ──────────────────────────────────

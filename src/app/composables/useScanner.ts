@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue'
-import type { ScannerRow, ScannerTimeframe, ScannerMode, SortDirection, QuickFilter } from '~/types/scanner'
+import type { ScannerRow, ScannerTimeframe, ScannerMode, SortDirection, QuickFilter, StratSetup } from '~/types/scanner'
 import { useScanCriteria } from '~/composables/useScanCriteria'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -63,6 +63,8 @@ const wsStatus           = ref<'disconnected' | 'connecting' | 'connected' | 'er
 // Tracks the *server-side* WS relay status (pushed via SSE messages).
 // Separate from wsStatus which only reflects the EventSource connection.
 const serverWsStatus     = ref<'disconnected' | 'connecting' | 'authenticating' | 'connected' | 'error'>('disconnected')
+// Latest setup alerts pushed by the server for A+/A setups.
+const latestSetupAlert   = ref<StratSetup | null>(null)
 
 let eventSource: EventSource | null = null
 let scanDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -212,6 +214,7 @@ function connectLive() {
         | { type: 'snapshot'; rows: ScannerRow[] }
         | { type: 'update'; row: ScannerRow }
         | { type: 'wsStatus'; status: string }
+        | { type: 'setupAlert'; setup: StratSetup }
 
       if (msg.type === 'snapshot') {
         // Always adopt a non-empty snapshot from the server so reconnects
@@ -223,6 +226,8 @@ function connectLive() {
         if (idx >= 0) rows.value.splice(idx, 1, { ...rows.value[idx]!, ...msg.row })
       } else if (msg.type === 'wsStatus') {
         serverWsStatus.value = msg.status as typeof serverWsStatus.value
+      } else if (msg.type === 'setupAlert') {
+        latestSetupAlert.value = msg.setup
       }
     } catch { /* ignore malformed frames */ }
   }
@@ -242,7 +247,7 @@ export function useScanner() {
   return {
     timeframe, mode, activeQuickFilter, sortKey, sortDir,
     rows, isScanning, scanError, total, universeCount, lastScan,
-    nextCursor, isLoadingMore, wsStatus, serverWsStatus,
+    nextCursor, isLoadingMore, wsStatus, serverWsStatus, latestSetupAlert,
     filteredRows, totalCount, showingCount,
     allRows: rows,
     initScanner, setTimeframe, setMode, toggleQuickFilter, clearFilters, setSortBy,
