@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useScanner } from '~/composables/useScanner'
 import { useToast } from '~/composables/useToast'
 import { useStratSetups } from '~/composables/useStratSetups'
+import { useChartTabs } from '~/composables/useChartTabs'
 import type { StratSetup } from '~/types/scanner'
 
 const props = defineProps<{ setup: StratSetup }>()
@@ -11,6 +12,11 @@ const emit  = defineEmits<{ back: [] }>()
 const { rows } = useScanner()
 const toast = useToast()
 const { armPriceAlert, isAlertArmed } = useStratSetups()
+const { openTab } = useChartTabs()
+
+function openChart() {
+  openTab(props.setup.symbol, props.setup.entryPrice, props.setup)
+}
 
 // Live price for the symbol from the row cache
 const currentPrice = computed(() => {
@@ -206,6 +212,7 @@ async function setAlert() {
 
     <!-- Actions -->
     <div class="checklist-actions">
+      <button class="action-btn" @click="openChart">📈 Open Chart</button>
       <button
         class="action-btn"
         :class="{ 'action-btn--armed': alertArmed }"

@@ -25,6 +25,7 @@ const activeTabData = computed(() => tabs.value.find(t => t.symbol === activeTab
       <ScannerSymbolChart
         :symbol="activeTabData.symbol"
         :base-price="activeTabData.basePrice"
+        :setup="activeTabData.setup"
       />
     </ClientOnly>
   </div>

@@ -357,7 +357,7 @@ function openChecklist(rec: SetupAlertRecord) {
 /* ── Alert list ── */
 .alerts-scroll {
   flex: 1;
-  overflow-y: auto;
+  overflow-y: scroll;
   padding: 0.4rem 0.5rem;
   display: flex;
   flex-direction: column;

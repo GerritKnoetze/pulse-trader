@@ -1,8 +1,10 @@
 import { ref, readonly } from 'vue'
+import type { StratSetup } from '~/types/scanner'
 
 export interface ChartTab {
   symbol: string
   basePrice: number
+  setup?: StratSetup
 }
 
 // Module-level singleton state
@@ -10,9 +12,13 @@ const tabs = ref<ChartTab[]>([])
 const activeTab = ref<'scan' | string>('scan')
 
 export function useChartTabs() {
-  function openTab(symbol: string, basePrice: number) {
-    if (!tabs.value.find(t => t.symbol === symbol)) {
-      tabs.value.push({ symbol, basePrice })
+  function openTab(symbol: string, basePrice: number, setup?: StratSetup) {
+    const existing = tabs.value.find(t => t.symbol === symbol)
+    if (existing) {
+      // Update setup if a newer one is passed
+      if (setup) existing.setup = setup
+    } else {
+      tabs.value.push({ symbol, basePrice, setup })
     }
     activeTab.value = symbol
   }

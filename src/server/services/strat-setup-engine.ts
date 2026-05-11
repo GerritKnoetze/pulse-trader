@@ -56,9 +56,13 @@ const PREMIUM_COMBOS = new Set([
   '1-3 Bullish', '1-3 Bearish',
 ])
 
-// ── TF hierarchy for continuity checks ───────────────────────────────────────
+// ── TF hierarchy for continuity checks (day trading — capped at D) ──────────
 
-const TF_ORDER: ScannerTimeframe[] = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y']
+// Valid signal timeframes for day trading (no daily/swing setups)
+const INTRADAY_SIGNAL_TFS = new Set<ScannerTimeframe>(['1', '5', '15', '30', '60'])
+
+// Continuity checks stop at D — W/M/Q/Y are not relevant for intraday traders
+const TF_ORDER: ScannerTimeframe[] = ['1', '5', '15', '30', '60', 'D']
 
 function getHigherTfs(signalTf: ScannerTimeframe): ScannerTimeframe[] {
   const idx = TF_ORDER.indexOf(signalTf)
@@ -159,18 +163,26 @@ function gradeSetup(
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Score a scanner row against The Strat methodology.
- * Returns a StratSetup if a recognizable combo is found, null otherwise.
+ * Score a scanner row against The Strat methodology (intraday setups only).
+ * Returns a StratSetup if a recognizable combo is found on the given intraday TF, null otherwise.
  *
- * @param row  The enriched ScannerRow (must have pattern, mtf, atrDollar, ftfc, inForce)
- * @param bars The raw daily bars for the symbol (unsorted OK — sorted internally)
+ * @param row       The enriched ScannerRow (must have mtf, atrDollar, ftfc, inForce)
+ * @param bars      Pre-aggregated bars for signalTf (e.g. 30M bars)
+ * @param signalTf  The intraday timeframe the pattern was detected on ('5'|'15'|'30'|'60')
+ * @param tfPattern The pattern string computed from the signalTf bars
  */
-export function scoreSetup(row: ScannerRow, bars: BarInput[]): StratSetup | null {
-  if (!row.pattern || bars.length < 3) return null
+export function scoreSetup(
+  row: ScannerRow,
+  bars: BarInput[],
+  signalTf: ScannerTimeframe,
+  tfPattern: string,
+): StratSetup | null {
+  if (!INTRADAY_SIGNAL_TFS.has(signalTf)) return null
+  if (!tfPattern || bars.length < 3) return null
 
   const sorted = [...bars].sort((a, b) => a.timestamp - b.timestamp)
 
-  const combo = resolveCombo(row.pattern, sorted)
+  const combo = resolveCombo(tfPattern, sorted)
   if (!combo) return null
 
   const levels = computeLevels(combo.direction, sorted)
@@ -190,12 +202,12 @@ export function scoreSetup(row: ScannerRow, bars: BarInput[]): StratSetup | null
     ? Math.round((riskAmt / row.atrDollar) * 100) / 100
     : 0
 
-  const tfContinuity = computeTfContinuity(combo.direction, row.mtf, 'D')
+  const tfContinuity = computeTfContinuity(combo.direction, row.mtf, signalTf)
   const quality      = gradeSetup(combo.isPremium, row.ftfc, row.inForce, rr, tfContinuity)
 
   return {
     symbol:          row.symbol,
-    signalTf:        'D',
+    signalTf,
     combo:           combo.combo,
     comboType:       combo.comboType,
     direction:       combo.direction,

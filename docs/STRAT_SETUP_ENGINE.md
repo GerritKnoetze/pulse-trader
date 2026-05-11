@@ -31,7 +31,6 @@ Extends the existing scanner with a **decision layer** that identifies high-prob
 ```
 
 Intraday workflow layers: **30min combo → 1H check → D check → 5min entry/stop**
-Swing workflow layers: **D combo → W check → M check → D entry/stop**
 
 ---
 
@@ -92,6 +91,8 @@ export interface StratSetup {
 | `B` | Basic combo + signal TF continuity only |
 | `C` | Pattern exists, higher TF conflicts |
 
+> **Note:** FTFC for day trading requires all intraday TFs (5M, 15M, 30M, 1H) **and** D to agree. W/M/Q/Y are not part of the day-trading FTFC check.
+
 ### Premium combos (from The Strat "Our Favorites")
 
 | Combo | Notes |
@@ -143,11 +144,14 @@ SHORT setup:
 
 ### Scanner engine integration
 
-In `src/server/services/scanner-engine.ts`, `enrichPage()`:
-1. After `computeTA()`, call `scoreSetup(row, bars)`
-2. Attach `StratSetup` to row (or a parallel `setupCache` map)
-3. Detect new A+/A setups vs previous scan → broadcast `setup-alert` via SSE
-4. Track `alertSent` per `${symbol}-${signalTf}` to avoid duplicates
+In `src/server/services/scanner-engine.ts`, `enrichTicker()`:
+1. Fetch minute bars alongside daily bars
+2. After `computeTA()`, aggregate minute bars into 30M, 1H, 15M, 5M bars
+3. For each intraday TF in priority order (30M → 1H → 15M → 5M), compute the pattern and call `scoreSetup(row, tfBars, signalTf, tfPattern)`
+4. First matching setup wins — attach to row and broadcast `setup-alert`
+5. Track `alertSent` per `${symbol}-${signalTf}` to avoid duplicates
+
+> **No daily/swing setups:** `scoreSetup` rejects any `signalTf` outside `['1','5','15','30','60']`. D/W/M/Q/Y are used only as continuity checks, never as signal timeframes.
 
 ---
 
@@ -299,6 +303,28 @@ Replace the current seeded-random `ScannerSymbolChart.vue` with a **4-panel real
 - Stop level (dashed red line)
 - T1 / T2 / T3 targets (dashed green lines)
 - Bar-type labels (`1`, `2u`, `2d`, `3`) on each candle
+
+**How the price levels are determined:**
+
+All four panels display the same price levels sourced from the `StratSetup` object, computed on the **signal timeframe** (`signalTf`) — the intraday TF where the combo was detected (30M, 1H, 15M, or 5M):
+
+| Level | Source | Derivation |
+|---|---|---|
+| **Entry** (white) | `signalTf` bars | `bars[n-2].high` for long · `bars[n-2].low` for short — break of the prior completed candle |
+| **Stop** (red) | `signalTf` bars | `bars[n-1].low` for long · `bars[n-1].high` for short — opposite extreme of the entry candle |
+| **T1** (green) | `signalTf` bars | `bars[n-3].high/low` — extreme of the candle two bars back |
+| **T2** (green) | `signalTf` bars | `bars[n-4].high/low` — extreme of the candle three bars back |
+| **T3** (green) | `signalTf` bars | `bars[n-5].high/low` — extreme of the candle four bars back |
+
+**Why all four panels show the same levels:**
+
+The levels are absolute price values, so they are meaningful on every timeframe. Displaying them across all panels lets the trader see:
+- **D panel** — whether the entry is near a significant daily level (prior day H/L)
+- **1H panel** — whether the 1H structure confirms the direction of the trade
+- **30M panel** — the combo candles that generated the signal (the levels will align with the 30M candles when `signalTf = 30M`)
+- **5M panel** — where to watch for the actual entry trigger and fine-tune the stop
+
+When the chart is opened via **Open Chart** from `ScannerSetupChecklist`, the `StratSetup` is passed directly as a prop and the levels are drawn automatically on all four panels on render.
 
 **Chart library:** TradingView Lightweight Charts (already referenced for chart work)
 

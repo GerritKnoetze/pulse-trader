@@ -22,7 +22,7 @@ import type { BarInput } from '../database/repositories/market-data-repository'
 import type { AggregateTick } from './ws-relay'
 import { getSnapshotCache } from './snapshot-cache'
 import { getCandleCache } from './candle-cache'
-import { computeTA, computeRVOL, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min } from './ta-calculator'
+import { computeTA, computeRVOL, computeCcCodes, computePattern, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min } from './ta-calculator'
 import { getWsRelay } from './ws-relay'
 import { getOrSyncDailyBars, getOrSyncMinuteBars, persistMinuteBar } from './market-data.service'
 import { appLog } from './app-log'
@@ -274,11 +274,28 @@ class ScannerEngine {
         category: ta.category,
       }
 
-      // Score Strat setup and attach to row
-      const setup = scoreSetup(row, dailyBars)
-      if (setup) {
-        row.setup = setup
-        this.maybeAlert(setup)
+      // Score Strat setup on intraday TFs (day trading only — no daily/swing setups)
+      // Priority: 30M → 1H → 15M → 5M (first match wins)
+      if (minuteBars.length > 0) {
+        const sortedMin = [...minuteBars].sort((a, b) => a.timestamp - b.timestamp)
+        const intradayTfs: Array<{ tf: '30' | '60' | '15' | '5'; aggregate: (b: typeof sortedMin) => typeof sortedMin }> = [
+          { tf: '30', aggregate: aggregateTo30min },
+          { tf: '60', aggregate: aggregateTo60min },
+          { tf: '15', aggregate: aggregateTo15min },
+          { tf: '5',  aggregate: aggregateTo5min  },
+        ]
+        for (const { tf, aggregate } of intradayTfs) {
+          const tfBars = aggregate(sortedMin)
+          if (tfBars.length < 3) continue
+          const tfPattern = computePattern(computeCcCodes(tfBars))
+          if (!tfPattern) continue
+          const setup = scoreSetup(row, tfBars, tf, tfPattern)
+          if (setup) {
+            row.setup = setup
+            this.maybeAlert(setup)
+            break
+          }
+        }
       }
 
       return row
