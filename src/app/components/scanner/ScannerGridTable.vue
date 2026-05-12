@@ -18,6 +18,7 @@ function copySymbol(symbol: string) {
   if (copyTimeout) clearTimeout(copyTimeout)
   copyTimeout = setTimeout(() => { copiedSymbol.value = null }, 1500)
 }
+import LoadingOverlay from '~/components/common/LoadingOverlay.vue'
 import { useScanner } from '~/composables/useScanner'
 import { useChartTabs } from '~/composables/useChartTabs'
 import { useGridColumns } from '~/composables/useGridColumns'
@@ -132,13 +133,8 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 
 <template>
   <div class="scanner-grid-scroll">
-    <!-- Loading overlay — disabled (was causing flicker on tab switch; re-enable by removing `&& false`) -->
-    <Transition name="loading-fade">
-      <div v-if="isScanning" class="loading-overlay" role="status" aria-label="Scanning market">
-        <span class="loading-spinner" aria-hidden="true" />
-        <span class="loading-label">Scanning market&hellip;</span>
-      </div>
-    </Transition>
+    <!-- Loading overlay -->
+    <LoadingOverlay v-if="isScanning" label="Scanning market\u2026" />
     <table class="scanner-table">
       <thead>
         <tr>
@@ -747,39 +743,5 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 .setup-modal-close:hover { color: #ccc; }
 .setup-modal-close-icon { width: 1rem; height: 1rem; }
 
-/* ── Loading state ──────────────────────────────────────────── */
-.loading-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 5; /* below sticky thead (z-index: 10) so header stays visible */
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.85rem;
-  background: rgba(10, 10, 12, 0.72);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-}
-.loading-spinner {
-  display: inline-block;
-  width: 2rem;
-  height: 2rem;
-  border: 2.5px solid rgba(200, 118, 40, 0.18);
-  border-top-color: #c87628;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  flex-shrink: 0;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-.loading-label {
-  font-size: 0.84rem;
-  color: #aaa;
-  letter-spacing: 0.02em;
-}
-/* Fade transition */
-.loading-fade-enter-active,
-.loading-fade-leave-active { transition: opacity 0.2s ease; }
-.loading-fade-enter-from,
-.loading-fade-leave-to   { opacity: 0; }
+/* ── Loading state — handled by LoadingOverlay component ── */
 </style>

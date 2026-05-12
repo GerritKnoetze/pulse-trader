@@ -73,8 +73,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* Must NOT be display:contents — that removes the element's box and prevents
+   position:absolute + inset:0 (applied via scanner-view-panel from scanner.vue)
+   from establishing a definite size, which breaks the entire height chain:
+   drawers lose their constrained height (no scrollbars, footer buttons disappear),
+   scanner-grid-scroll collapses to zero height (loading overlay invisible). */
 .scanner-grid-root {
-  display: contents;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .scanner-grid-wrapper {

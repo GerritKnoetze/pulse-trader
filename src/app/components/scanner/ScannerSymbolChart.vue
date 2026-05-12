@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import type { StratSetup } from '~/types/scanner'
+import { useScanner } from '~/composables/useScanner'
+import LoadingOverlay from '~/components/common/LoadingOverlay.vue'
 
 const props = defineProps<{
   symbol:    string
@@ -8,20 +10,18 @@ const props = defineProps<{
   setup?:    StratSetup   // optional — draws entry/stop/target overlays when provided
 }>()
 
-// ── Panel layout ──────────────────────────────────────────────────────────────
-//   Top-left:   D  (trend context)
-//   Top-right:  W  (higher-TF check)
-//   Bot-left:   30 (signal / combo timeframe)
-//   Bot-right:  5  (5-min entry / stop refinement)
-// For swing setups (signal TF = D) we swap intraday panels for M/W.
+// ── Live data (scanner SSE stream) ────────────────────────────────────────────
+const { rows } = useScanner()
+const currentRow = computed(() => rows.value.find(r => r.symbol === props.symbol))
 
+// ── Panel layout ──────────────────────────────────────────────────────────────
 interface Panel {
   key:   'M' | 'W' | 'D' | '60' | '30' | '5'
   label: string
   title: string
 }
 
-// Fixed 4-panel layout per spec: D (trend) · 1H (check) · 30M (combo) · 5M (entry)
+// Fixed 4-panel layout: D (trend) · 1H (check) · 30M (combo) · 5M (entry)
 function buildPanels(): Panel[] {
   return [
     { key: 'D',  label: 'D',   title: 'Daily'  },
@@ -41,7 +41,7 @@ function setContainerRef(index: number, el: Element | null) {
 const loading = ref(false)
 const dataSource = ref<'real' | 'demo'>('demo')
 
-// ── Seeded fallback (keeps existing behaviour when no real data) ──────────────
+// ── Seeded fallback (when no real data is available) ──────────────────────────
 function symbolSeed(sym: string, extra = 0): number {
   return sym.split('').reduce((acc, c, i) => acc + c.charCodeAt(0) * (i + 1) * 31, 0) + extra
 }
@@ -54,7 +54,7 @@ interface OHLCBar { time: number; open: number; high: number; low: number; close
 
 function generateOHLC(base: number, count: number, rng: () => number, volFactor: number): OHLCBar[] {
   const endMs = Date.now()
-  const intervalMs = 24 * 3600 * 1000  // use daily spacing for fallback
+  const intervalMs = 24 * 3600 * 1000
   const closes: number[] = [base]
   for (let i = 1; i < count; i++) {
     const prev = closes[closes.length - 1]!
@@ -109,14 +109,43 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
   return out
 }
 
-// ── Chart lifecycle ───────────────────────────────────────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let chartInstances: { remove: () => void }[] = []
+// ── Synthesise today's partial daily bar from 5-min intraday data ─────────────
+// The D-bar DB only contains closed sessions. During a live trading session
+// today's bar doesn't exist yet, so the daily chart's last close (yesterday)
+// differs from the intraday charts. This builds the missing bar.
+function buildTodayDBar(realBars: Record<string, OHLCBar[]>): OHLCBar | null {
+  const min5 = realBars['5']
+  if (!min5 || min5.length === 0) return null
+  const todaySec = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+  const todayBars = min5.filter(b => b.time >= todaySec)
+  if (todayBars.length === 0) return null
+  return {
+    time:  todaySec,
+    open:  todayBars[0]!.open,
+    high:  Math.max(...todayBars.map(b => b.high)),
+    low:   Math.min(...todayBars.map(b => b.low)),
+    close: todayBars[todayBars.length - 1]!.close,
+  }
+}
+
+// ── Chart instances (extended to support live updates) ────────────────────────
+interface ChartEntry {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  chart:          { remove: () => void; resize: (w: number, h: number) => void }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  series:         any
+  panelKey:       string
+  lastBar:        OHLCBar | null
+  resizeObserver: ResizeObserver
+}
+
+let chartEntries: ChartEntry[] = []
 
 async function buildCharts() {
-  loading.value = true  // set immediately — before the dynamic import — so the opaque loading state shows on the very first frame
+  loading.value = true
   const { createChart } = await import('lightweight-charts')
   destroyCharts()
+
   let realBars: Record<string, OHLCBar[]> = {}
   try {
     realBars = await fetchBars()
@@ -130,6 +159,26 @@ async function buildCharts() {
   const hasReal = Object.keys(realBars).length > 0
   dataSource.value = hasReal ? 'real' : 'demo'
 
+  // Patch today's partial D bar from intraday 5-min data so D and intraday
+  // charts share the same "current" close price.
+  if (hasReal && realBars['D']) {
+    const todaySec  = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+    const lastDTs   = realBars['D'][realBars['D'].length - 1]?.time ?? 0
+    if (lastDTs < todaySec) {
+      const todayBar = buildTodayDBar(realBars)
+      if (todayBar) {
+        // Apply live price if already known
+        const livePrice = currentRow.value?.last
+        if (livePrice) {
+          todayBar.close = livePrice
+          todayBar.high  = Math.max(todayBar.high, livePrice)
+          todayBar.low   = Math.min(todayBar.low,  livePrice)
+        }
+        realBars['D'] = [...realBars['D'], todayBar]
+      }
+    }
+  }
+
   const panels = buildPanels()
   const FALLBACK_COUNTS: Record<string, number> = { M: 36, W: 52, D: 100, '60': 80, '30': 80, '5': 80 }
   const FALLBACK_VOL:    Record<string, number> = { M: 0.045, W: 0.028, D: 0.015, '60': 0.005, '30': 0.007, '5': 0.003 }
@@ -140,7 +189,12 @@ async function buildCharts() {
 
     const isIntraday = panel.key === '60' || panel.key === '30' || panel.key === '5'
 
+    // Use explicit width/height + ResizeObserver instead of autoSize:true.
+    // autoSize can silently produce 0-height charts when the container lives
+    // inside a flex/grid with overflow:hidden before layout stabilises.
     const chart = createChart(el, {
+      width:  el.clientWidth  || 400,
+      height: el.clientHeight || 300,
       layout: {
         background: { type: 'solid' as const, color: '#111' },
         textColor: '#9ca3af',
@@ -150,7 +204,19 @@ async function buildCharts() {
         vertLines: { color: '#1e1e1e' },
         horzLines: { color: '#1e1e1e' },
       },
-      crosshair: { mode: 0 },
+      crosshair: { mode: 1 },   // Magnet — snaps to bars for precise OHLC readout
+      handleScroll: {
+        mouseWheel:        true,
+        pressedMouseMove:  true,
+        horzTouchDrag:     true,
+        vertTouchDrag:     true,
+      },
+      handleScale: {
+        mouseWheel:             true,
+        pinch:                  true,
+        axisPressedMouseMove:   true,
+        axisDoubleClickReset:   true,
+      },
       rightPriceScale: {
         borderColor: '#2a2a2a',
         scaleMargins: { top: 0.1, bottom: 0.05 },
@@ -161,10 +227,18 @@ async function buildCharts() {
         timeVisible: isIntraday,
         secondsVisible: false,
       },
-      autoSize: true,
     } as Parameters<typeof createChart>[1])
 
-    // Get bar data — real or fallback
+    // Resize chart whenever the container changes size (handles v-show toggle,
+    // sidebar open/close, window resize, etc.)
+    const resizeObserver = new ResizeObserver(() => {
+      const w = el.clientWidth
+      const h = el.clientHeight
+      if (w > 0 && h > 0) chart.resize(w, h)
+    })
+    resizeObserver.observe(el)
+
+    // Get bar data — real or seeded fallback
     let data: OHLCBar[]
     if (hasReal && realBars[panel.key] && realBars[panel.key]!.length > 0) {
       data = realBars[panel.key]!
@@ -194,27 +268,88 @@ async function buildCharts() {
       to: count - 1 + 5,
     })
 
-    chartInstances.push(chart)
+    chartEntries.push({
+      chart: chart as ChartEntry['chart'],
+      series,
+      panelKey:       panel.key,
+      lastBar:        data[data.length - 1] ?? null,
+      resizeObserver,
+    })
   })
 }
 
 function destroyCharts() {
-  chartInstances.forEach(c => { try { c.remove() } catch (_) {} })
-  chartInstances = []
+  chartEntries.forEach(e => {
+    e.resizeObserver.disconnect()
+    try { e.chart.remove() } catch (_) {}
+  })
+  chartEntries = []
 }
 
 onMounted(buildCharts)
 onUnmounted(destroyCharts)
 watch(() => props.symbol, buildCharts)
 watch(() => props.setup,  buildCharts, { deep: false })
+
+// ── Live price updates ────────────────────────────────────────────────────────
+// When the scanner SSE stream pushes a price update for this symbol, push the
+// new close into every chart series so all timeframes stay in sync.
+watch(currentRow, (newRow) => {
+  if (!newRow || chartEntries.length === 0) return
+  const livePrice = newRow.last
+  if (!livePrice) return
+
+  const todaySec = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+
+  for (const entry of chartEntries) {
+    const lb = entry.lastBar
+    if (!lb) continue
+
+    let updatedBar: OHLCBar
+
+    if (entry.panelKey === 'D') {
+      if (lb.time >= todaySec) {
+        // Today's bar already exists — update close/high/low in place
+        updatedBar = {
+          time:  lb.time,
+          open:  lb.open,
+          high:  Math.max(lb.high, livePrice),
+          low:   Math.min(lb.low,  livePrice),
+          close: livePrice,
+        }
+      } else {
+        // Today's bar not yet present — append it (series.update adds when ts > last)
+        updatedBar = {
+          time:  todaySec,
+          open:  livePrice,
+          high:  livePrice,
+          low:   livePrice,
+          close: livePrice,
+        }
+      }
+    } else {
+      // Intraday panels: update the most recent partial candle
+      updatedBar = {
+        time:  lb.time,
+        open:  lb.open,
+        high:  Math.max(lb.high, livePrice),
+        low:   Math.min(lb.low,  livePrice),
+        close: livePrice,
+      }
+    }
+
+    try {
+      entry.series.update(updatedBar as Parameters<typeof entry.series.update>[0])
+      entry.lastBar = updatedBar
+    } catch (_) { /* ignore if series already removed */ }
+  }
+}, { deep: false })
 </script>
 
 <template>
   <div class="symbol-chart-view">
     <!-- Loading state -->
-    <div v-if="loading" class="chart-loading">
-      <span class="chart-loading-text">Loading bars for {{ symbol }}…</span>
-    </div>
+    <LoadingOverlay v-if="loading" :label="`Loading bars for ${symbol}\u2026`" />
 
     <div v-else class="chart-grid">
       <div
@@ -246,18 +381,6 @@ watch(() => props.setup,  buildCharts, { deep: false })
   overflow: hidden;
   min-height: 0;
   background: #111; /* opaque from frame 1 — prevents scanner grid showing through during mount */
-}
-
-/* Loading */
-.chart-loading {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.chart-loading-text {
-  color: var(--color-text-soft);
-  font-size: 0.85rem;
 }
 
 .chart-grid {
