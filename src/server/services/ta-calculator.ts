@@ -377,14 +377,4 @@ export function computeRVOL(todayVolume: number, avgVol: number): number {
   return Math.round((todayVolume / avgVol) * 100) / 100
 }
 
-// ── Build a partial row from snapshot + TA ────────────────────────────────────
 
-export function buildScannerRow(
-  symbol: string,
-  last: number,
-  chgDollar: number,
-  chgPct: number,
-  ta: TAResult,
-): Omit<ScannerRowTA, 'id'> {
-  return { symbol, last, chgDollar, chgPct, sector: '', ...ta }
-}

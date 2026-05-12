@@ -3,8 +3,11 @@ import { ref } from 'vue'
 import {
   FunnelIcon,
   DocumentDuplicateIcon,
+  XMarkIcon,
 } from '@heroicons/vue/24/outline'
 import { FunnelIcon as FunnelIconSolid } from '@heroicons/vue/24/solid'
+import ScannerSetupChecklist from '~/components/scanner/ScannerSetupChecklist.vue'
+import type { StratSetup } from '~/types/scanner'
 
 const copiedSymbol = ref<string | null>(null)
 let copyTimeout: ReturnType<typeof setTimeout> | null = null
@@ -27,6 +30,11 @@ type MtfTf = typeof MTF_TFS[number]
 
 const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor } = useScanner()
 const { openTab } = useChartTabs()
+
+// ── Setup modal ─────────────────────────────────────────────
+const modalSetup = ref<StratSetup | null>(null)
+function openSetupModal(setup: StratSetup) { modalSetup.value = setup }
+function closeSetupModal() { modalSetup.value = null }
 
 const {
   orderedColumns,
@@ -179,7 +187,7 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
           >
             <template v-if="col.key === 'symbol'">
               <span class="symbol-cell">
-                <span class="symbol-link" @click="openTab(row.symbol, row.last)">{{ row.symbol }}</span>
+                <span class="symbol-link" @click="openTab(row.symbol, row.last, row.setup)">{{ row.symbol }}</span>
                 <button
                   class="symbol-copy-btn"
                   :class="{ 'symbol-copy-copied': copiedSymbol === row.symbol }"
@@ -205,7 +213,35 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
                 >{{ tf }}</span>
               </span>
             </template>
-            <template v-else>{{ getCellText(col as ColDef, row) }}</template>
+            <template v-else-if="col.key === 'setup'">
+              <template v-if="row.setup">
+                <div class="setup-cell" @click.stop="openSetupModal(row.setup)">
+                  <span :class="['setup-badge', `setup-q-${row.setup.quality.replace('+','plus')}`]">
+                    {{ row.setup.quality }}
+                  </span>
+                  <span :class="['setup-dir', row.setup.direction === 'long' ? 'setup-long' : 'setup-short']">
+                    {{ row.setup.direction === 'long' ? '▲' : '▼' }}
+                  </span>
+                  <!-- Hover tooltip -->
+                  <div class="setup-tooltip">
+                    <div class="stt-header">
+                      <span :class="['stt-quality', `setup-q-${row.setup.quality.replace('+','plus')}`]">{{ row.setup.quality }}</span>
+                      <span :class="['stt-dir', row.setup.direction === 'long' ? 'setup-long' : 'setup-short']">{{ row.setup.direction.toUpperCase() }}</span>
+                      <span class="stt-tf">{{ row.setup.signalTf }}</span>
+                    </div>
+                    <div class="stt-combo">{{ row.setup.combo }}</div>
+                    <div class="stt-levels">
+                      <span class="stt-lbl">Entry</span><span class="stt-entry">${{ row.setup.entryPrice.toFixed(2) }}</span>
+                      <span class="stt-lbl">Stop</span><span class="stt-stop">${{ row.setup.stop.toFixed(2) }}</span>
+                      <span class="stt-lbl">T1</span><span class="stt-t1">${{ row.setup.targets[0]?.toFixed(2) ?? '—' }}</span>
+                    </div>
+                    <div class="stt-rr">R:R {{ row.setup.rr }} · {{ row.setup.atrRisk }}× ATR</div>
+                    <div class="stt-hint">Click for full checklist</div>
+                  </div>
+                </div>
+              </template>
+            </template>
+            <template v-else>{{ getCellText(col, row) }}</template>
           </td>
         </tr>
       </tbody>
@@ -223,6 +259,18 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
       </tfoot>
     </table>
   </div>
+
+  <!-- Setup modal -->
+  <Teleport to="body">
+    <div v-if="modalSetup" class="setup-modal-backdrop" @click.self="closeSetupModal">
+      <div class="setup-modal">
+        <button class="setup-modal-close" @click="closeSetupModal">
+          <XMarkIcon class="setup-modal-close-icon" />
+        </button>
+        <ScannerSetupChecklist :setup="modalSetup" @back="closeSetupModal" />
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -566,4 +614,128 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
   animation: pulse-text 1s ease-in-out infinite;
 }
 @keyframes pulse-text { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* ── Setup column ───────────────────────────────────────────── */
+.td-setup { padding: 0.28rem 0.4rem; }
+
+.setup-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  padding: 0.1rem 0.2rem;
+  border-radius: 4px;
+  transition: background 0.12s;
+}
+.setup-cell:hover { background: rgba(255,255,255,0.06); }
+
+.setup-badge {
+  font-size: 0.66rem;
+  font-weight: 800;
+  padding: 0.08rem 0.28rem;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+}
+.setup-q-Aplus  { background: rgba(42,92,42,0.8);  color: #6dde6d; }
+.setup-q-A      { background: rgba(30,74,30,0.8);  color: #4fc34f; }
+.setup-q-B      { background: rgba(58,58,26,0.8);  color: #c8c840; }
+.setup-q-C      { background: rgba(58,26,26,0.8);  color: #c84040; }
+
+.setup-dir  { font-size: 0.65rem; font-weight: 700; }
+.setup-long  { color: #22c55e; }
+.setup-short { color: #ff6b6b; }
+
+/* Tooltip */
+.setup-tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  width: 200px;
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 0.5rem 0.55rem;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  pointer-events: none;
+}
+/* Keep it on screen if near right edge */
+.setup-cell:hover .setup-tooltip { display: block; }
+
+.stt-header {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0.25rem;
+}
+.stt-quality {
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+}
+.stt-dir  { font-size: 0.68rem; font-weight: 700; }
+.stt-tf   { font-size: 0.65rem; color: #888; margin-left: auto; }
+.stt-combo { font-size: 0.68rem; color: #ccc; margin-bottom: 0.3rem; }
+
+.stt-levels {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.4rem;
+  row-gap: 0.15rem;
+  font-size: 0.67rem;
+  margin-bottom: 0.3rem;
+  font-variant-numeric: tabular-nums;
+}
+.stt-lbl   { color: #777; }
+.stt-entry { color: #a8d0ff; }
+.stt-stop  { color: #ffb0b0; }
+.stt-t1    { color: #a0e8b0; }
+.stt-rr    { font-size: 0.65rem; color: #999; margin-bottom: 0.25rem; }
+.stt-hint  { font-size: 0.62rem; color: #555; text-align: center; }
+
+/* ── Setup modal ────────────────────────────────────────────── */
+.setup-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.setup-modal {
+  position: relative;
+  background: #161616;
+  border: 1px solid #333;
+  border-radius: 8px;
+  width: 380px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+.setup-modal-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #777;
+  padding: 0.2rem;
+  border-radius: 4px;
+  z-index: 1;
+  transition: color 0.12s;
+  display: flex;
+  align-items: center;
+}
+.setup-modal-close:hover { color: #ccc; }
+.setup-modal-close-icon { width: 1rem; height: 1rem; }
 </style>

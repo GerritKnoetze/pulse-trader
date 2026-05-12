@@ -31,6 +31,7 @@ export const COLUMNS: ColDef[] = [
   { key: 'chgPct',    label: 'Ch%',          width: '60px',  align: 'left'   },
   { key: 'atrDollar', label: 'ATR $',        width: '60px',  align: 'left'   },
   { key: 'mtf',       label: 'MTF',          width: '248px', align: 'center', noSort: true, noFilter: true },
+  { key: 'setup',     label: 'Setup',        width: '88px',  align: 'center', noSort: true },
 ]
 
 const GRID_STATE_KEY = 'pulse-scanner-grid-state'

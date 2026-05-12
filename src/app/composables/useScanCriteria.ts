@@ -38,10 +38,13 @@ function persist() {
 }
 
 const activeCount = computed(() => {
+  const c = criteria.value
   let count = 0
-  for (const v of Object.values(criteria.value)) {
-    if (v !== undefined && v !== null && v !== '') count++
-  }
+  // min+max pairs count as one criteria each
+  if (c.minPrice         !== undefined || c.maxPrice         !== undefined) count++
+  if (c.minChangePercent !== undefined || c.maxChangePercent !== undefined) count++
+  if (c.minVolume        !== undefined) count++
+  if (c.minRvol          !== undefined) count++
   return count
 })
 

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ArrowLeftIcon } from '@heroicons/vue/24/outline'
 import { useScanner } from '~/composables/useScanner'
 import { useToast } from '~/composables/useToast'
 import { useStratSetups } from '~/composables/useStratSetups'
 import { useChartTabs } from '~/composables/useChartTabs'
 import type { StratSetup } from '~/types/scanner'
 
-const props = defineProps<{ setup: StratSetup }>()
+const props = defineProps<{ setup: StratSetup; showBack?: boolean }>()
 const emit  = defineEmits<{ back: [] }>()
 
 const { rows } = useScanner()
@@ -111,7 +112,7 @@ async function setAlert() {
   <div class="checklist">
     <!-- Header -->
     <div class="checklist-header">
-      <button class="back-btn" @click="$emit('back')">← Back</button>
+      <button v-if="showBack" class="back-btn" @click="emit('back')" title="Back"><ArrowLeftIcon class="back-icon" /></button>
       <span class="checklist-title">
         <span :class="['quality-badge', `quality-${setup.quality.replace('+', 'plus')}`]">{{ setup.quality }}</span>
         {{ setup.symbol }} {{ setup.direction.toUpperCase() }}
@@ -242,15 +243,27 @@ async function setAlert() {
 }
 
 .back-btn {
-  background: none;
-  border: none;
-  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+  width: 1.5rem;
+  height: 1.5rem;
   cursor: pointer;
-  font-size: 0.72rem;
-  padding: 0.15rem 0;
+  color: var(--color-text-soft);
   flex-shrink: 0;
+  padding: 0;
 }
-.back-btn:hover { text-decoration: underline; }
+.back-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--color-text);
+}
+.back-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
 
 .checklist-title {
   font-size: 0.82rem;

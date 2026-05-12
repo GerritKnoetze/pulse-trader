@@ -72,7 +72,7 @@ function relativeTime(iso: string) {
 
     <!-- Checklist view (selected setup) -->
     <template v-if="selectedSetup">
-      <ScannerSetupChecklist :setup="selectedSetup" @back="selectSetup(null)" />
+      <ScannerSetupChecklist :setup="selectedSetup" :show-back="true" @back="selectSetup(null)" />
     </template>
 
     <!-- List view -->

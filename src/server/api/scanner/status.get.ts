@@ -1,5 +1,4 @@
 import { getScannerEngine } from '../../services/scanner-engine'
-import { getWsRelay } from '../../services/ws-relay'
 
 export default defineEventHandler(() => {
   try {

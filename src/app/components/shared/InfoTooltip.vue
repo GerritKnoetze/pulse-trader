@@ -1,19 +1,34 @@
 <script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue'
+
 const props = defineProps<{
   title: string
   width?: string
 }>()
 
 const visible = ref(false)
+const wrapperRef = ref<HTMLElement | null>(null)
+
+function toggle() { visible.value = !visible.value }
+
+function onDocClick(e: MouseEvent) {
+  if (visible.value && wrapperRef.value && !wrapperRef.value.contains(e.target as Node)) {
+    visible.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick, true))
+onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 </script>
 
 <template>
   <div
+    ref="wrapperRef"
     class="info-tooltip-wrapper"
-    @mouseenter="visible = true"
-    @mouseleave="visible = false"
   >
-    <slot name="trigger" />
+    <div @click.stop="toggle">
+      <slot name="trigger" />
+    </div>
 
     <Transition name="tooltip-fade">
       <div

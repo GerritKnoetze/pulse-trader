@@ -139,10 +139,10 @@ function computeTfContinuity(
   const expected = direction === 'long' ? 'up' : 'down'
   const dirs = higherTfs.map(tf => mtf[tf])
 
-  if (dirs.every(d => d === expected)) return 'full'
-  if (dirs[0] !== expected)            return 'conflicted'
-  if (dirs.some(d => d === expected))  return 'partial'
-  return 'conflicted'
+  if (dirs.every(d => d === expected))  return 'full'
+  if (dirs.every(d => d !== expected))  return 'blocked'   // all higher TFs oppose the trade
+  if (dirs[0] !== expected)             return 'conflicted' // immediate next TF opposes
+  return 'partial'
 }
 
 // ── Quality grading ───────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ function gradeSetup(
 ): SetupQuality {
   if (ftfc && isPremium && inForce && rr >= 2) return 'A+'
   if ((ftfc || isPremium) && inForce)          return 'A'
-  if (tfContinuity !== 'conflicted')           return 'B'
+  if (tfContinuity === 'full' || tfContinuity === 'partial') return 'B'
   return 'C'
 }
 
@@ -218,7 +218,7 @@ export function scoreSetup(
     rr,
     atrRisk,
     tfContinuity,
-    higherTfBlocked: false,
+    higherTfBlocked: tfContinuity === 'blocked',
     inForce:         row.inForce,
     ftfc:            row.ftfc,
     detectedAt:      new Date().toISOString(),

@@ -6,11 +6,11 @@ import { useScanner } from '~/composables/useScanner'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 import { useGridFilters } from '~/composables/useGridFilters'
 import { useGridColumns } from '~/composables/useGridColumns'
-import type { ScannerTimeframe, ScannerMode } from '~/types/scanner'
+import type { ScannerTimeframe } from '~/types/scanner'
 
 const {
-  timeframe, mode, activeQuickFilter,
-  setTimeframe, setMode, toggleQuickFilter, clearFilters,
+  timeframe, activeQuickFilter,
+  setTimeframe, toggleQuickFilter, clearFilters,
   QUICK_FILTERS, runScan, isScanning,
 } = useScanner()
 
@@ -81,31 +81,6 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       >
         {{ tf }}
       </button>
-    </div>
-
-    <div class="toolbar-divider" />
-
-    <!-- Scan mode -->
-    <div class="scan-mode-group">
-      <span class="scan-mode-label">Scan Mode</span>
-      <div class="mode-toggle">
-        <button
-          class="mode-btn"
-          :class="{ active: mode === 'signal' }"
-          @click="setMode('signal')"
-        >
-          <span v-if="mode === 'signal'" class="mode-indicator" />
-          Signal
-        </button>
-        <button
-          class="mode-btn"
-          :class="{ active: mode === 'setup' }"
-          @click="setMode('setup')"
-        >
-          <span v-if="mode === 'setup'" class="mode-indicator" />
-          Setup
-        </button>
-      </div>
     </div>
 
     <div class="toolbar-divider" />
@@ -243,57 +218,6 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
   width: 1px;
   height: 1.4rem;
   background: var(--color-border);
-  flex-shrink: 0;
-}
-
-/* Scan mode */
-.scan-mode-group {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.scan-mode-label {
-  font-size: 0.8rem;
-  color: var(--color-text-soft);
-  white-space: nowrap;
-}
-
-.mode-toggle {
-  display: flex;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.mode-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  background: none;
-  border: none;
-  color: var(--color-text-soft);
-  font-size: 0.82rem;
-  font-weight: 500;
-  padding: 0.28rem 0.7rem;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.mode-btn:hover {
-  color: var(--color-text);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.mode-btn.active {
-  color: #c87628;
-}
-
-.mode-indicator {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #c87628;
   flex-shrink: 0;
 }
 

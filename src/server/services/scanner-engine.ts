@@ -162,8 +162,13 @@ class ScannerEngine {
 
     const page = candidates.slice(startIdx, startIdx + limit)
     appLog(`Enriching ${page.length} symbol${page.length !== 1 ? 's' : ''} (page offset ${startIdx})`)
-    const rows = await this.enrichPage(page)
-    appLog(`Enriched ${rows.length}/${page.length} symbols — TA computed`)
+    const enriched = await this.enrichPage(page)
+    appLog(`Enriched ${enriched.length}/${page.length} symbols — TA computed`)
+
+    // Apply minRvol filter post-enrichment (requires computed avgVol30 from bar data)
+    const rows = criteria.minRvol != null
+      ? enriched.filter(r => r.rvol >= criteria.minRvol!)
+      : enriched
 
     // Update row cache
     for (const row of rows) this.rowCache.set(row.symbol, row)
@@ -263,6 +268,7 @@ class ScannerEngine {
         atrPct: ta.atrPct,
         atrDollar: ta.atrDollar,
         avgVol30: ta.avgVol30,
+        rvol,
         inForce: ta.inForce,
         ftfc: ta.ftfc,
         mtf: ta.mtf,
@@ -318,6 +324,7 @@ class ScannerEngine {
       atrPct: 0,
       atrDollar: 0,
       avgVol30: 0,
+      rvol: 0,
       inForce: false,
       ftfc: false,
       mtf: { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up', D: 'up', W: 'up', M: 'up', Q: 'up', Y: 'up' },

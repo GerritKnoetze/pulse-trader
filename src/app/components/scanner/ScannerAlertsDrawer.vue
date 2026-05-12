@@ -74,7 +74,7 @@ function openChecklist(rec: SetupAlertRecord) {
 
     <!-- Checklist detail view -->
     <template v-if="selectedSetup">
-      <ScannerSetupChecklist :setup="selectedSetup" @back="selectSetup(null)" />
+      <ScannerSetupChecklist :setup="selectedSetup" :show-back="true" @back="selectSetup(null)" />
     </template>
 
     <!-- Alert list view -->

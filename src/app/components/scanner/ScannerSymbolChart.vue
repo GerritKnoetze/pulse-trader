@@ -109,12 +109,6 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
   return out
 }
 
-// ── Price-level lines ─────────────────────────────────────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addPriceLine(series: any, price: number, color: string, title: string) {
-  series.createPriceLine({ price, color, lineWidth: 1, lineStyle: 2 /* dashed */, axisLabelVisible: true, title })
-}
-
 // ── Chart lifecycle ───────────────────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let chartInstances: { remove: () => void }[] = []
@@ -193,16 +187,6 @@ async function buildCharts() {
     series.setData(data as Parameters<typeof series.setData>[0])
     series.setMarkers(markers as Parameters<typeof series.setMarkers>[0])
 
-    // ── Setup level overlays ─────────────────────────────────────────────────
-    if (props.setup) {
-      const s = props.setup
-      addPriceLine(series, s.entryPrice, '#ffffff', `E $${s.entryPrice}`)
-      addPriceLine(series, s.stop,       '#ef5350', `S $${s.stop}`)
-      s.targets.forEach((t, i) => {
-        addPriceLine(series, t, '#26a69a', `T${i + 1} $${t}`)
-      })
-    }
-
     // Visible range — show last 36 bars for higher TF, more for intraday
     const visibleBars = panel.key === 'D' ? 36 : 60
     const count = data.length
@@ -223,7 +207,7 @@ function destroyCharts() {
 onMounted(buildCharts)
 onUnmounted(destroyCharts)
 watch(() => props.symbol, buildCharts)
-watch(() => props.setup,  buildCharts, { deep: false })
+watch(() => props.setup,  buildCharts, { deep: false, immediate: true })
 </script>
 
 <template>

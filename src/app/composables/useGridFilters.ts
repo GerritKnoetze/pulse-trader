@@ -28,6 +28,11 @@ watch(columnFilters, (val) => {
 registerScanRowsLoadedCallback(() => { columnFilters.value = {} })
 
 export function cellDisplayValue(key: keyof ScannerRow, row: ScannerRow): string {
+  if (key === 'setup') {
+    if (!row.setup) return ''
+    const dir = row.setup.direction === 'long' ? 'Long' : 'Short'
+    return `${row.setup.quality} ${dir}`
+  }
   const v = row[key]
   if (typeof v === 'boolean') return v ? 'True' : 'False'
   if (v === null || v === undefined) return ''
@@ -122,7 +127,26 @@ export function useGridFilters() {
     }
     const btn = event.currentTarget as HTMLElement
     const rect = btn.getBoundingClientRect()
-    filterDropdownPos.value = { top: rect.bottom + 2, left: rect.left }
+
+    const DROPDOWN_W = 200
+    const DROPDOWN_H = 300  // conservative max height
+    const MARGIN     = 8
+
+    // Horizontal: align to button left, but clamp so right edge stays on screen
+    let left = rect.left
+    if (left + DROPDOWN_W + MARGIN > window.innerWidth) {
+      left = window.innerWidth - DROPDOWN_W - MARGIN
+    }
+    if (left < MARGIN) left = MARGIN
+
+    // Vertical: prefer below button; flip above if it would overflow the bottom
+    let top = rect.bottom + 2
+    if (top + DROPDOWN_H + MARGIN > window.innerHeight) {
+      top = rect.top - DROPDOWN_H - 2
+    }
+    if (top < MARGIN) top = MARGIN
+
+    filterDropdownPos.value = { top, left }
     openFilterCol.value = key
     filterSearch.value = ''
   }

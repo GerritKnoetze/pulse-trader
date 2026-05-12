@@ -50,6 +50,7 @@ export interface ScannerRow {
   cc1: string
   cc: string
   avgVol30: number
+  rvol: number
   inForce: boolean
   ftfc: boolean
   chgDollar: number
