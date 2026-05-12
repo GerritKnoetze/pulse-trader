@@ -134,7 +134,7 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 <template>
   <div class="scanner-grid-scroll">
     <!-- Loading overlay -->
-    <LoadingOverlay v-if="isScanning" label="Scanning market\u2026" />
+    <LoadingOverlay v-if="isScanning" label="Scanning market..." />
     <table class="scanner-table">
       <thead>
         <tr>

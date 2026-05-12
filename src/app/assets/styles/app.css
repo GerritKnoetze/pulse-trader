@@ -1102,6 +1102,7 @@ body {
   pointer-events: auto;
   min-width: 240px;
   max-width: 380px;
+  opacity: 0.9;
 }
 
 .toast-icon {

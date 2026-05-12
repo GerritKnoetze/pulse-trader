@@ -249,9 +249,13 @@ class ScannerEngine {
 
       // Minute bars are optional — a failure (rate limit, no intraday data, etc.)
       // must never degrade a row that has valid daily bar data.
+      // A 15-second timeout prevents a hanging socket from blocking a worker slot.
       let minuteBars: BarInput[] = []
       try {
-        minuteBars = await this.getIntradayBars(ticker.ticker)
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('intraday fetch timeout (15 s)')), 15_000)
+        )
+        minuteBars = await Promise.race([this.getIntradayBars(ticker.ticker), timeoutPromise])
       } catch (err) {
         appLog(`${ticker.ticker}: intraday fetch failed — ${String(err).slice(0, 80)}`, 'warn')
         /* non-critical — TA will use daily-only MTF fallback */

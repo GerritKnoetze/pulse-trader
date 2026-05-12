@@ -21,12 +21,12 @@ interface Panel {
   title: string
 }
 
-// Fixed 4-panel layout: D (trend) · 1H (check) · 30M (combo) · 5M (entry)
+// Fixed 4-panel layout: W (weekly) · D (daily) · 1H (hour) · 5M (entry)
 function buildPanels(): Panel[] {
   return [
+    { key: 'W',  label: 'W',   title: 'Weekly' },
     { key: 'D',  label: 'D',   title: 'Daily'  },
     { key: '60', label: '1H',  title: '1-Hour' },
-    { key: '30', label: '30M', title: '30-min' },
     { key: '5',  label: '5M',  title: '5-min'  },
   ]
 }
@@ -187,7 +187,7 @@ async function buildCharts() {
     const el = containerRefs.value[idx]
     if (!el) return
 
-    const isIntraday = panel.key === '60' || panel.key === '30' || panel.key === '5'
+    const isIntraday = panel.key === '60' || panel.key === '5'
 
     // Use explicit width/height + ResizeObserver instead of autoSize:true.
     // autoSize can silently produce 0-height charts when the container lives
@@ -204,7 +204,9 @@ async function buildCharts() {
         vertLines: { color: '#1e1e1e' },
         horzLines: { color: '#1e1e1e' },
       },
-      crosshair: { mode: 1 },   // Magnet — snaps to bars for precise OHLC readout
+      crosshair: {
+        mode: 0,   // Normal — time snaps to bars, price line follows mouse freely
+      },
       handleScroll: {
         mouseWheel:        true,
         pressedMouseMove:  true,
