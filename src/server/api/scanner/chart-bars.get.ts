@@ -43,7 +43,15 @@ export default defineEventHandler(async (event) => {
   // ── Daily (and derived W/M) ───────────────────────────────────────────────
   let dailyBars: BarInput[] = []
   try {
-    dailyBars = await getOrSyncDailyBars(ticker)
+    // L1: CandleCache (warmed by the scan enrichment)
+    const cachedDaily = getCandleCache().get(ticker, 'day')
+    if (cachedDaily && cachedDaily.length > 0) {
+      dailyBars = cachedDaily
+    } else {
+      // L2 → L3: SQLite / Massive.com API
+      dailyBars = await getOrSyncDailyBars(ticker)
+      if (dailyBars.length > 0) getCandleCache().set(ticker, 'day', dailyBars)
+    }
   } catch {
     // Return what we have even if API fails — chart will show empty panels
   }

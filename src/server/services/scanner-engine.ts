@@ -219,14 +219,24 @@ class ScannerEngine {
   // ── Private: enrichment ──────────────────────────────────────────────────
 
   private async enrichPage(candidates: SnapshotTicker[]): Promise<ScannerRow[]> {
-    // Fetch bars in parallel with concurrency limit
-    const results: ScannerRow[] = []
-    for (let i = 0; i < candidates.length; i += MAX_CONCURRENCY) {
-      const batch = candidates.slice(i, i + MAX_CONCURRENCY)
-      const batchRows = await Promise.all(batch.map(t => this.enrichTicker(t)))
-      results.push(...batchRows.filter((r): r is ScannerRow => r !== null))
+    // Work-stealing pool: always keep MAX_CONCURRENCY enrichments in-flight.
+    // Unlike serial batching (wait for all 10 before starting the next 10),
+    // each worker immediately picks the next symbol as soon as it finishes.
+    // This eliminates the "wait for the slowest L3 fetch in a batch" stall.
+    const results: (ScannerRow | null)[] = new Array(candidates.length).fill(null)
+    let nextIdx = 0
+    const worker = async () => {
+      while (nextIdx < candidates.length) {
+        const i = nextIdx++
+        results[i] = await this.enrichTicker(candidates[i]!)
+      }
     }
-    return results
+    const workers = Array.from(
+      { length: Math.min(MAX_CONCURRENCY, candidates.length) },
+      worker,
+    )
+    await Promise.all(workers)
+    return results.filter((r): r is ScannerRow => r !== null)
   }
 
   private async enrichTicker(ticker: SnapshotTicker): Promise<ScannerRow | null> {

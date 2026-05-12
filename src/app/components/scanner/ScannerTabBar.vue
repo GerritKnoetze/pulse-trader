@@ -100,6 +100,12 @@ const { tabs, activeTab, setActiveTab, closeTab } = useChartTabs()
   font-size: 0.81rem;
 }
 
+.tab-symbol {
+  min-width: 5rem;
+  justify-content: space-between;
+  padding-right: 0.3rem;
+}
+
 .tab-close {
   display: flex;
   align-items: center;
@@ -107,7 +113,7 @@ const { tabs, activeTab, setActiveTab, closeTab } = useChartTabs()
   width: 1rem;
   height: 1rem;
   border-radius: 3px;
-  margin-left: 0.15rem;
+  margin-left: auto;
   flex-shrink: 0;
   opacity: 0.4;
   transition: opacity 0.1s, background 0.1s;

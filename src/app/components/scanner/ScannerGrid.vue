@@ -49,28 +49,34 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="scanner-grid-wrapper">
-    <div class="scanner-grid-main">
-      <ScannerToolbar />
-      <ScannerGridTable />
-      <ScannerStatusBar :log-open="logOpen" @toggle-log="logOpen = !logOpen" />
-      <ScannerLogConsole :open="logOpen" @update:open="logOpen = $event" />
+  <div class="scanner-grid-root">
+    <div class="scanner-grid-wrapper">
+      <div class="scanner-grid-main">
+        <ScannerToolbar />
+        <ScannerGridTable />
+        <ScannerStatusBar :log-open="logOpen" @toggle-log="logOpen = !logOpen" />
+        <ScannerLogConsole :open="logOpen" @update:open="logOpen = $event" />
+      </div>
+      <ScannerCriteriaPanel :open="activePanel === 'criteria'" @close="activePanel = null" />
+      <ScannerColumnsDrawer :open="activePanel === 'columns'" @close="activePanel = null" />
+      <ScannerLayoutsDrawer :open="activePanel === 'layouts'" @close="activePanel = null" @reset="handleReset" />
+      <ScannerMyFiltersDrawer :open="activePanel === 'my-filters'" @close="activePanel = null" />
+      <ScannerSetupsPanel :open="activePanel === 'setups'" @close="activePanel = null" />
+      <ScannerAlertsDrawer :open="activePanel === 'alerts'" @close="activePanel = null" />
+      <ScannerSideStrip
+        :active-panel="activePanel"
+        @toggle-panel="togglePanel"
+      />
     </div>
-    <ScannerCriteriaPanel :open="activePanel === 'criteria'" @close="activePanel = null" />
-    <ScannerColumnsDrawer :open="activePanel === 'columns'" @close="activePanel = null" />
-    <ScannerLayoutsDrawer :open="activePanel === 'layouts'" @close="activePanel = null" @reset="handleReset" />
-    <ScannerMyFiltersDrawer :open="activePanel === 'my-filters'" @close="activePanel = null" />
-    <ScannerSetupsPanel :open="activePanel === 'setups'" @close="activePanel = null" />
-    <ScannerAlertsDrawer :open="activePanel === 'alerts'" @close="activePanel = null" />
-    <ScannerSideStrip
-      :active-panel="activePanel"
-      @toggle-panel="togglePanel"
-    />
+    <ScannerColFilterDropdown />
   </div>
-  <ScannerColFilterDropdown />
 </template>
 
 <style scoped>
+.scanner-grid-root {
+  display: contents;
+}
+
 .scanner-grid-wrapper {
   display: flex;
   flex-direction: row;

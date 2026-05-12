@@ -1,5 +1,6 @@
 import { SettingsRepository, type SettingType } from '../../database/repositories/settings-repository';
 import { mergeJsonWithExisting, encryptJsonFields } from '../../utils/encryption';
+import { invalidateCredentialCache } from '../../services/market-data.service';
 
 /** Allowed setting keys for validation */
 const ALLOWED_KEYS = new Set([
@@ -60,6 +61,8 @@ export default defineEventHandler(async (event) => {
       const encrypted = encryptJsonFields(key, merged);
       repo.setSetting(key, JSON.stringify(encrypted), 'json');
       saved.push(key);
+      // Invalidate credential cache so the next API call picks up the new key
+      if (key === 'data-broker-details') invalidateCredentialCache();
       continue;
     }
 

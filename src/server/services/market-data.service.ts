@@ -45,7 +45,22 @@ interface MassiveTickerResponse {
   };
 }
 
+// ── Credential cache ─────────────────────────────────────────────────────────
+// Avoids a SQLite read + decrypt on every API call. TTL is short so a settings
+// change takes effect within 30 seconds without needing explicit invalidation.
+const CREDS_TTL_MS = 30_000
+let _cachedCreds: { apiKey: string; apiUrl: string } | null = null
+let _credsExpiry = 0
+
+/** Call this whenever the data-broker-details setting is saved. */
+export function invalidateCredentialCache(): void {
+  _cachedCreds = null
+  _credsExpiry = 0
+}
+
 function getDecryptedBrokerDetails(): { apiKey: string; apiUrl: string } {
+  if (_cachedCreds && Date.now() < _credsExpiry) return _cachedCreds
+
   const settingsRepo = new SettingsRepository();
   const raw = settingsRepo.getValue('data-broker-details');
   if (!raw) {
@@ -59,10 +74,12 @@ function getDecryptedBrokerDetails(): { apiKey: string; apiUrl: string } {
     throw new Error('Massive.com API key not configured. Please set it in Settings > Data Provider.');
   }
 
-  return {
+  _cachedCreds = {
     apiKey: decrypted.apiKey as string,
     apiUrl: (decrypted.apiUrl as string) || 'https://api.massive.com',
-  };
+  }
+  _credsExpiry = Date.now() + CREDS_TTL_MS
+  return _cachedCreds
 }
 
 function createClient() {

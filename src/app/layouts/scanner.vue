@@ -1,15 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref } from 'vue'
 import AppHeader from '~/components/layout/AppHeader.vue'
 import AppSidebar from '~/components/layout/AppSidebar.vue'
 import AppFooter from '~/components/layout/AppFooter.vue'
 import ToastContainer from '~/components/common/ToastContainer.vue'
 
 const sidebarCollapsed = ref(true)
-
-const toggleSidebar = () => {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-}
+const toggleSidebar = () => { sidebarCollapsed.value = !sidebarCollapsed.value }
 </script>
 
 <template>

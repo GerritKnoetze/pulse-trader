@@ -1,8 +1,11 @@
 import type { BarInput } from '../database/repositories/market-data-repository'
 
-// Per-timespan cache TTL
+// Per-timespan cache TTL.
+// Minute bars use a 15-minute TTL — long enough for chart clicks to be instant
+// after a scan. WS AM ticks call appendBar() in real-time, so the data stays
+// current during market hours regardless of this TTL.
 const TTL_MS: Record<string, number> = {
-  minute:  1 * 60_000,
+  minute: 15 * 60_000,
   hour:   60 * 60_000,
   day:    24 * 60 * 60_000,
   week:   24 * 60 * 60_000,

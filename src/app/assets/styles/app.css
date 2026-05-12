@@ -107,6 +107,12 @@ body {
   overflow: hidden;
 }
 
+/* Chart fullscreen — header + footer hidden, main fills entire viewport */
+.main-content.scanner-layout.chart-fullscreen {
+  top: 0;
+  height: 100vh;
+}
+
 /* ── Header ───────────────────────────────────────────────── */
 .app-header {
   height: var(--header-height);

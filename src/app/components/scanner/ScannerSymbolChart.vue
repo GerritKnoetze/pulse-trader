@@ -114,10 +114,9 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
 let chartInstances: { remove: () => void }[] = []
 
 async function buildCharts() {
+  loading.value = true  // set immediately — before the dynamic import — so the opaque loading state shows on the very first frame
   const { createChart } = await import('lightweight-charts')
   destroyCharts()
-
-  loading.value = true
   let realBars: Record<string, OHLCBar[]> = {}
   try {
     realBars = await fetchBars()
@@ -207,7 +206,7 @@ function destroyCharts() {
 onMounted(buildCharts)
 onUnmounted(destroyCharts)
 watch(() => props.symbol, buildCharts)
-watch(() => props.setup,  buildCharts, { deep: false, immediate: true })
+watch(() => props.setup,  buildCharts, { deep: false })
 </script>
 
 <template>
@@ -246,6 +245,7 @@ watch(() => props.setup,  buildCharts, { deep: false, immediate: true })
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  background: #111; /* opaque from frame 1 — prevents scanner grid showing through during mount */
 }
 
 /* Loading */
