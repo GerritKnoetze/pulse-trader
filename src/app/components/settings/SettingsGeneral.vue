@@ -11,6 +11,7 @@ const form = reactive({
   defaultPositionSize: 100,
   riskPerTrade: 2,
   confirmTrades: true,
+  debugMode: false,
 });
 
 async function load() {
@@ -20,6 +21,7 @@ async function load() {
     if (data['default-position-size']) form.defaultPositionSize = Number(data['default-position-size']);
     if (data['risk-per-trade']) form.riskPerTrade = Number(data['risk-per-trade']);
     form.confirmTrades = data['confirm-trades'] === 'true';
+    form.debugMode = data['debug-mode'] === 'true';
   } catch {
     toast.error('Failed to load trading settings');
   }
@@ -31,6 +33,7 @@ function getFormData(): Record<string, string> {
     'default-position-size': String(form.defaultPositionSize),
     'risk-per-trade': String(form.riskPerTrade),
     'confirm-trades': String(form.confirmTrades),
+    'debug-mode': String(form.debugMode),
   };
 }
 
@@ -87,6 +90,17 @@ onMounted(load);
           </div>
           <label class="setting-checkbox">
             <input v-model="form.confirmTrades" type="checkbox" class="checkbox-input" />
+            <span class="checkbox-custom" />
+          </label>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-label">
+            <span class="label-text">Debug mode</span>
+            <span class="label-description">Show detailed technical logs below each scanner log entry</span>
+          </div>
+          <label class="setting-checkbox">
+            <input v-model="form.debugMode" type="checkbox" class="checkbox-input" />
             <span class="checkbox-custom" />
           </label>
         </div>

@@ -8,6 +8,7 @@ const SETTINGS_KEYS = [
   'default-position-size',
   'risk-per-trade',
   'confirm-trades',
+  'debug-mode',
   // Data provider
   'active-data-broker',
   'data-broker-details',

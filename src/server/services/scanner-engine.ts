@@ -89,15 +89,18 @@ class ScannerEngine {
     getWsRelay().onStatus('scanner-engine-log', (status) => {
       if (disconnectLogTimer) { clearTimeout(disconnectLogTimer); disconnectLogTimer = null }
       if (status === 'connected') {
-        appLog('WS connected — live ticks active')
+        appLog('WS connected — live ticks active', 'info',
+          `Subscriptions: ${getWsRelay().getSubscriptionCount()} channels | SSE clients: ${this.sseClients.size} | RowCache: ${this.rowCache.size} rows`)
         this.broadcastStatus(status)
       } else if (status === 'error') {
-        appLog('WS error — check API key / network', 'error')
+        appLog('WS error — check API key / network', 'error',
+          `SSE clients: ${this.sseClients.size} | RowCache: ${this.rowCache.size} rows (stale) | Check API key in Settings → Data Provider`)
         this.broadcastStatus(status)
       } else if (status === 'disconnected') {
         disconnectLogTimer = setTimeout(() => {
           disconnectLogTimer = null
-          appLog('WS disconnected', 'warn')
+          appLog('WS disconnected', 'warn',
+            `Subscriptions lost: ${getWsRelay().getSubscriptionCount()} channels | SSE clients: ${this.sseClients.size} | Reconnecting with exponential backoff (1 s → 30 s max)`)
           this.broadcastStatus('disconnected')
         }, 3_000)
       }
@@ -115,6 +118,7 @@ class ScannerEngine {
    * @param limit     max rows to return per page
    */
   async scan(criteria: ScanCriteria, cursor: string | null, limit: number): Promise<ScanPage> {
+    const scanStart = Date.now()
     const isFirstPage = !cursor
     if (isFirstPage) {
       const parts: string[] = []
@@ -123,7 +127,11 @@ class ScannerEngine {
       if (criteria.minChangePercent != null || criteria.maxChangePercent != null)
         parts.push(`chg% ${criteria.minChangePercent ?? ''}–${criteria.maxChangePercent ?? ''}`)
       if (criteria.minVolume != null) parts.push(`vol ≥${criteria.minVolume.toLocaleString()}`)
-      appLog(`Scan started${parts.length ? ' — ' + parts.join(', ') : ''}`)
+      const criteriaDetail = Object.entries(criteria)
+        .filter(([, v]) => v !== undefined && v !== null)
+        .map(([k, v]) => `${k}=${v}`).join(', ')
+      appLog(`Scan started${parts.length ? ' — ' + parts.join(', ') : ''}`, 'info',
+        `Criteria: {${criteriaDetail || 'none'}} | Cursor: ${cursor ?? 'start'} | Limit: ${limit} | RowCache: ${this.rowCache.size} rows | SSE clients: ${this.sseClients.size}`)
     }
 
     const snapshot = await getSnapshotCache().getSnapshot()
@@ -133,7 +141,11 @@ class ScannerEngine {
     const candidates = filterSnapshot(unique, criteria)
 
     if (isFirstPage) {
-      appLog(`Snapshot: ${snapshot.length.toLocaleString()} universe → ${candidates.length.toLocaleString()} matched`)
+      const deduped = snapshot.length - unique.length
+      const filtered = unique.length - candidates.length
+      const pct = unique.length > 0 ? ((candidates.length / unique.length) * 100).toFixed(1) : '0.0'
+      appLog(`Snapshot: ${snapshot.length.toLocaleString()} universe → ${candidates.length.toLocaleString()} matched`, 'info',
+        `Deduped: ${deduped} duplicate tickers removed | Unique: ${unique.length.toLocaleString()} | Filtered out: ${filtered.toLocaleString()} by price/chg%/vol | Pass rate: ${pct}%`)
     }
 
     // Sort by |change%| descending so biggest movers are first
@@ -161,9 +173,14 @@ class ScannerEngine {
     }
 
     const page = candidates.slice(startIdx, startIdx + limit)
-    appLog(`Enriching ${page.length} symbol${page.length !== 1 ? 's' : ''} (page offset ${startIdx})`)
+    const symbolPreview = page.slice(0, 8).map(t => t.ticker).join(', ') + (page.length > 8 ? ` … +${page.length - 8}` : '')
+    appLog(`Enriching ${page.length} symbol${page.length !== 1 ? 's' : ''} (page offset ${startIdx})`, 'info',
+      `Symbols: [${symbolPreview}] | Concurrency: ${MAX_CONCURRENCY} workers | Intraday timeout: 30 s | CandleCache before: ${getCandleCache().size} entries`)
+    const enrichStart = Date.now()
     const enriched = await this.enrichPage(page)
-    appLog(`Enriched ${enriched.length}/${page.length} symbols — TA computed`)
+    const enrichMs = Date.now() - enrichStart
+    appLog(`Enriched ${enriched.length}/${page.length} symbols — TA computed`, 'info',
+      `Duration: ${enrichMs} ms | Skipped (no data): ${page.length - enriched.length} | CandleCache after: ${getCandleCache().size} entries | RowCache: ${this.rowCache.size} rows`)
 
     // Apply minRvol filter post-enrichment (requires computed avgVol30 from bar data)
     const rows = criteria.minRvol != null
@@ -179,7 +196,10 @@ class ScannerEngine {
     this.lastScanAt = new Date().toISOString()
     if (isFirstPage) {
       const tickers = rows.slice(0, 5).map(r => r.symbol).join(', ')
-      appLog(`Scan complete — ${rows.length} rows${rows.length > 0 ? ` (top: ${tickers}${rows.length > 5 ? '…' : ''})` : ''}`)
+      const totalMs = Date.now() - scanStart
+      const rvolRemoved = enriched.length - rows.length
+      appLog(`Scan complete — ${rows.length} rows${rows.length > 0 ? ` (top: ${tickers}${rows.length > 5 ? '…' : ''})` : ''}`, 'info',
+        `Total duration: ${totalMs} ms | rVol filter removed: ${rvolRemoved} | RowCache: ${this.rowCache.size} rows | WS subscriptions: ${getWsRelay().getSubscriptionCount()}`)
     }
 
     return {
@@ -243,7 +263,11 @@ class ScannerEngine {
     try {
       const dailyBars = await this.getDailyBars(ticker.ticker)
       if (dailyBars.length < 2) {
-        appLog(`${ticker.ticker}: insufficient daily bars (${dailyBars.length}) — skipped`, 'warn')
+        const lastDate = dailyBars.length > 0
+          ? new Date(dailyBars[dailyBars.length - 1]!.timestamp).toISOString().slice(0, 10)
+          : 'none'
+        appLog(`${ticker.ticker}: insufficient daily bars (${dailyBars.length}) — skipped`, 'warn',
+          `Required: ≥2 bars | Available: ${dailyBars.length} | Last bar date: ${lastDate} | Possibly a new listing or delisted symbol`)
         return null
       }
 
@@ -257,7 +281,9 @@ class ScannerEngine {
         )
         minuteBars = await Promise.race([this.getIntradayBars(ticker.ticker), timeoutPromise])
       } catch (err) {
-        appLog(`${ticker.ticker}: intraday fetch failed — ${String(err).slice(0, 80)}`, 'warn')
+        const errType = err instanceof Error ? err.constructor.name : 'UnknownError'
+        appLog(`${ticker.ticker}: intraday fetch failed — ${String(err).slice(0, 80)}`, 'warn',
+          `Symbol: ${ticker.ticker} | Error type: ${errType} | Layer: L1 (CandleCache) → L2 (SQLite) → L3 (Massive.com API) | Daily bars: ${dailyBars.length} available — TA will use daily-only MTF fallback`)
         /* non-critical — TA will use daily-only MTF fallback */
       }
 

@@ -15,6 +15,7 @@ export interface AppLogEntry {
   ts:    number
   level: 'info' | 'warn' | 'error'
   msg:   string
+  detail?: string   // technical detail shown only when debug mode is on
 }
 
 type SseWriter = (entry: AppLogEntry) => void
@@ -24,8 +25,8 @@ const buffer: AppLogEntry[] = []
 let   nextId = 1
 const clients = new Map<string, SseWriter>()
 
-export function appLog(msg: string, level: AppLogEntry['level'] = 'info'): void {
-  const entry: AppLogEntry = { id: nextId++, ts: Date.now(), level, msg }
+export function appLog(msg: string, level: AppLogEntry['level'] = 'info', detail?: string): void {
+  const entry: AppLogEntry = { id: nextId++, ts: Date.now(), level, msg, ...(detail !== undefined && { detail }) }
   buffer.push(entry)
   if (buffer.length > MAX_BUFFER) buffer.shift()
   for (const writer of clients.values()) {

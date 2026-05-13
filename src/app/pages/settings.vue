@@ -61,7 +61,7 @@ const searchQuery = ref('');
 
 /** Searchable keywords per section (nav labels + field labels + subsections) */
 const sectionKeywords: Record<string, string[]> = {
-  trading: ['trading', 'trading preferences', 'local currency', 'position size', 'risk per trade', 'confirm trade'],
+  trading: ['trading', 'trading preferences', 'local currency', 'position size', 'risk per trade', 'confirm trade', 'debug', 'debug mode', 'technical logs', 'console'],
   'data-provider': ['data provider', 'massive', 'api key', 'api base url', 'websocket', 'market data', 'price feeds', 'quotes'],
   'trading-broker': ['trading broker', 'account broker', 'tradezero', 'live account', 'paper account', 'api key', 'api secret', 'orders', 'portfolio'],
   'llm-provider': ['ai', 'llm', 'language model', 'github copilot', 'personal access token', 'pat', 'gpt'],

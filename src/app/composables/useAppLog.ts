@@ -5,6 +5,7 @@ export interface AppLogEntry {
   ts:    number
   level: 'info' | 'warn' | 'error'
   msg:   string
+  detail?: string
 }
 
 const MAX_ENTRIES = 500

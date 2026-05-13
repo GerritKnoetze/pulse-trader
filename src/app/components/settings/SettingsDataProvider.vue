@@ -169,7 +169,6 @@ onMounted(load);
       </div>
     </div>
 
+    <SettingsConnectionTestModal :open="testModalOpen" @close="testModalOpen = false" />
   </div>
-
-  <SettingsConnectionTestModal :open="testModalOpen" @close="testModalOpen = false" />
 </template>

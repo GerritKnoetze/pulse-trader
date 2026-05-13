@@ -333,9 +333,8 @@ onMounted(async () => {
       </div>
     </div>
 
+    <SettingsLlmConnectionTestModal :open="testModalOpen" @close="testModalOpen = false" />
   </div>
-
-  <SettingsLlmConnectionTestModal :open="testModalOpen" @close="testModalOpen = false" />
 </template>
 
 
