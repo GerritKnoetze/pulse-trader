@@ -281,17 +281,51 @@ function tfDirection(bars: BarInput[]): MtfSignal {
   return last.close >= last.open ? 'up' : 'down'
 }
 
+/** Today's live OHLCV from the REST snapshot — used to synthesize the current daily candle. */
+export interface TodaySnap { o: number; h: number; l: number; c: number; v: number }
+
 export function computeMtfState(
   dailyBars: BarInput[],
   minuteBars?: BarInput[],
+  todaySnap?: TodaySnap,
 ): MtfState {
   const sorted = [...dailyBars].sort((a, b) => a.timestamp - b.timestamp)
-  const weekly    = aggregateToWeekly(sorted)
-  const monthly   = aggregateToMonthly(sorted)
-  const quarterly = aggregateToQuarterly(sorted)
-  const yearly    = aggregateToYearly(sorted)
 
-  const dDir = tfDirection(sorted)
+  // Synthesize today's daily candle from the REST snapshot when available.
+  // Historical daily bars only contain *closed* sessions, so without this the D
+  // timeframe would always reflect yesterday's direction, not the current session.
+  // We use the snapshot (ticker.day) because it has the correct session open price;
+  // minute bars span a rolling 5-day window so sortedMin[0].open is NOT today's open.
+  let effectiveDaily = sorted
+  if (todaySnap && todaySnap.o > 0 && todaySnap.c > 0) {
+    const ticker = sorted.length > 0 ? sorted[0]!.ticker : ''
+    const todayBar: BarInput = {
+      ticker,
+      timespan: 'day',
+      timestamp: Date.now(),
+      open:   todaySnap.o,
+      close:  todaySnap.c,
+      high:   todaySnap.h || Math.max(todaySnap.o, todaySnap.c),
+      low:    todaySnap.l || Math.min(todaySnap.o, todaySnap.c),
+      volume: todaySnap.v,
+    }
+    // The last stored daily bar may already be today's session (e.g. if the DB
+    // synced an in-progress bar). Compare dates using UTC date strings.
+    const todayUTC = new Date().toDateString()
+    const lastDailyUTC = sorted.length > 0
+      ? new Date(sorted[sorted.length - 1]!.timestamp).toDateString()
+      : ''
+    effectiveDaily = lastDailyUTC === todayUTC
+      ? [...sorted.slice(0, -1), todayBar]
+      : [...sorted, todayBar]
+  }
+
+  const weekly    = aggregateToWeekly(effectiveDaily)
+  const monthly   = aggregateToMonthly(effectiveDaily)
+  const quarterly = aggregateToQuarterly(effectiveDaily)
+  const yearly    = aggregateToYearly(effectiveDaily)
+
+  const dDir = tfDirection(effectiveDaily)
   const wDir = tfDirection(weekly)
   const mDir = tfDirection(monthly)
   const qDir = tfDirection(quarterly)
@@ -328,9 +362,12 @@ export function computeMtfState(
 }
 
 // ── FTFC ──────────────────────────────────────────────────────────────────────
+// Only considers the four key timeframes: 5m, 1H, Daily, Weekly.
+
+const FTFC_TFS: (keyof MtfState)[] = ['5', '60', 'D', 'W']
 
 export function computeFTFC(mtf: MtfState): boolean {
-  const vals = Object.values(mtf) as MtfSignal[]
+  const vals = FTFC_TFS.map(tf => mtf[tf])
   return vals.every(v => v === 'up') || vals.every(v => v === 'down')
 }
 
@@ -354,6 +391,7 @@ export interface TAResult {
 export function computeTA(
   bars: BarInput[],
   minuteBars?: BarInput[],
+  todaySnap?: TodaySnap,
 ): TAResult {
   const sorted = [...bars].sort((a, b) => a.timestamp - b.timestamp)
 
@@ -361,7 +399,7 @@ export function computeTA(
   const avgVol30 = computeAvgVol30(sorted)
   const codes = computeCcCodes(sorted)
   const pattern = computePattern(codes)
-  const mtf = computeMtfState(sorted, minuteBars)
+  const mtf = computeMtfState(sorted, minuteBars, todaySnap)
   const ftfc = computeFTFC(mtf)
   const signal = computeSignal(codes)
   const category = computeCategory(codes, ftfc)

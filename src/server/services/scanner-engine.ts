@@ -22,7 +22,7 @@ import type { BarInput } from '../database/repositories/market-data-repository'
 import type { AggregateTick } from './ws-relay'
 import { getSnapshotCache } from './snapshot-cache'
 import { getCandleCache } from './candle-cache'
-import { computeTA, computeRVOL, computeCcCodes, computePattern, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min } from './ta-calculator'
+import { computeTA, computeRVOL, computeFTFC, computeMtfState, computeCcCodes, computePattern, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min, type TodaySnap } from './ta-calculator'
 import { getWsRelay } from './ws-relay'
 import { getOrSyncDailyBars, getOrSyncMinuteBars, persistMinuteBar } from './market-data.service'
 import { appLog } from './app-log'
@@ -52,9 +52,16 @@ interface IntradayState {
   '15': MtfSignal
   '30': MtfSignal
   '60': MtfSignal
+  'D'?: MtfSignal  // updated on every AM tick
+  'W'?: MtfSignal  // updated on every AM tick from daily cache
+  'M'?: MtfSignal
+  'Q'?: MtfSignal
+  'Y'?: MtfSignal
   // live price/volume data
   lastPrice?: number
   accVolume?: number
+  // today's session open (from snapshot ticker.day.o) — used to derive live D direction
+  todayOpen?: number
   // previous session close — stored at scan time, used to compute live chg$/chg%
   prevDayClose?: number
 }
@@ -287,10 +294,42 @@ class ScannerEngine {
         /* non-critical — TA will use daily-only MTF fallback */
       }
 
-      const ta = computeTA(dailyBars, minuteBars.length > 0 ? minuteBars : undefined)
+      // Store today's open first so we can use intraState.lastPrice (live WS price)
+      // as the most reliable current price when building todaySnap.
+      let intraState = this.intraday.get(ticker.ticker)
+      if (!intraState) {
+        intraState = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
+        this.intraday.set(ticker.ticker, intraState)
+      }
+      if (ticker.day.o > 0) intraState.todayOpen = ticker.day.o
+
+      // Build today's daily snapshot so D/W/M/Q/Y reflect the current session.
+      // Use the most current price available (WS > lastTrade > min > day.c).
+      // Historical daily bars only contain closed sessions, so without this D
+      // would always show yesterday's direction.
+      const currentPrice = intraState.lastPrice
+        || ticker.lastTrade?.p
+        || ticker.min?.c
+        || ticker.day.c
+        || 0
+      const todaySnap = ticker.day.o > 0 && currentPrice > 0 ? {
+        o: ticker.day.o,
+        h: ticker.day.h || Math.max(ticker.day.o, currentPrice),
+        l: ticker.day.l || Math.min(ticker.day.o, currentPrice),
+        c: currentPrice,
+        v: ticker.day.v,
+      } : undefined
+
+      const ta = computeTA(dailyBars, minuteBars.length > 0 ? minuteBars : undefined, todaySnap)
+
+      // Safety net: if todaySnap was unavailable (ticker.day.o = 0), derive D direction
+      // from the snapshot's todaysChangePerc which is always populated and represents
+      // current price vs previous close (reliable proxy when we have no today open).
+      if (!todaySnap) {
+        ta.mtf.D = ticker.todaysChangePerc >= 0 ? 'up' : 'down'
+      }
 
       // Use live WS price if available, else snapshot price (|| chain handles pre-market zeros)
-      const intraState = this.intraday.get(ticker.ticker)
       const last = intraState?.lastPrice || ticker.lastTrade?.p || ticker.day.c || ticker.prevDay.c
       if (!last) return null
 
@@ -446,6 +485,27 @@ class ScannerEngine {
       state['15'] = dir15 as MtfSignal
       state['30'] = dir30 as MtfSignal
       state['60'] = dir60 as MtfSignal
+
+      // Re-derive D/W/M/Q/Y on every completed minute bar so higher-TF chips
+      // stay accurate throughout the session (e.g. a gap-up day flips W/M/Q/Y).
+      // We use daily bars from the CandleCache + today's synthetic bar (todayOpen→lastClose).
+      const dailyCache = getCandleCache().get(sym, 'day')
+      const lastMinBar = minuteBars[minuteBars.length - 1]!
+      if (dailyCache && state.todayOpen && state.todayOpen > 0) {
+        const snap: TodaySnap = { o: state.todayOpen, h: 0, l: 0, c: lastMinBar.close, v: 0 }
+        const upperMtf = computeMtfState(dailyCache, undefined, snap)
+        state['D'] = upperMtf.D
+        state['W'] = upperMtf.W
+        state['M'] = upperMtf.M
+        state['Q'] = upperMtf.Q
+        state['Y'] = upperMtf.Y
+      } else {
+        // Fallback: no daily cache or no todayOpen yet — derive D from prevDayClose only
+        const livePrice = state.lastPrice || lastMinBar.close
+        if (state.prevDayClose && state.prevDayClose > 0) {
+          state['D'] = (livePrice >= state.prevDayClose ? 'up' : 'down') as MtfSignal
+        }
+      }
     }
 
     // Patch cached row if present
@@ -458,12 +518,23 @@ class ScannerEngine {
         row.chgDollar = Math.round(diff * 100) / 100
         row.chgPct    = Math.round((diff / state.prevDayClose) * 10000) / 100
       }
+      // RVOL updates on every tick as today's accumulated volume grows
+      if (state.accVolume && row.avgVol30 > 0) {
+        row.rvol = computeRVOL(state.accVolume, row.avgVol30)
+      }
       if (tick.ev === 'AM') {
         row.mtf['1']  = state['1']
         row.mtf['5']  = state['5']
         row.mtf['15'] = state['15']
         row.mtf['30'] = state['30']
         row.mtf['60'] = state['60']
+        if (state['D']) row.mtf['D'] = state['D']
+        if (state['W']) row.mtf['W'] = state['W']
+        if (state['M']) row.mtf['M'] = state['M']
+        if (state['Q']) row.mtf['Q'] = state['Q']
+        if (state['Y']) row.mtf['Y'] = state['Y']
+        // FTFC must be recomputed after any MTF direction change
+        row.ftfc = computeFTFC(row.mtf)
       }
       this.broadcastUpdate(row)
     }

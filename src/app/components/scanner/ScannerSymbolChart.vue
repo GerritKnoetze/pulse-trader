@@ -74,7 +74,42 @@ function generateOHLC(base: number, count: number, rng: () => number, volFactor:
   })
 }
 
-// ── Strat bar-type markers ────────────────────────────────────────────────────
+// ── Weekly bar aggregation (client-side, from patched daily bars) ─────────────
+// Mirrors the server's aggregateToWeekly logic but operates on OHLCBar[] (time
+// in unix seconds) so the patched today-bar is included.
+function isoWeekKeySec(timeSec: number): string {
+  const d = new Date(timeSec * 1000)
+  const day = d.getUTCDay() || 7          // 1=Mon … 7=Sun
+  const thu = new Date(d)
+  thu.setUTCDate(d.getUTCDate() + 4 - day)
+  const jan1 = new Date(Date.UTC(thu.getUTCFullYear(), 0, 1))
+  const week = Math.ceil(((thu.getTime() - jan1.getTime()) / 86_400_000 + 1) / 7)
+  return `${thu.getUTCFullYear()}-W${String(week).padStart(2, '0')}`
+}
+
+function buildWeeklyBars(dailyBars: OHLCBar[]): OHLCBar[] {
+  if (!dailyBars.length) return []
+  const buckets = new Map<string, OHLCBar[]>()
+  for (const b of dailyBars) {
+    const k = isoWeekKeySec(b.time)
+    const arr = buckets.get(k) ?? []
+    arr.push(b)
+    buckets.set(k, arr)
+  }
+  const result: OHLCBar[] = []
+  for (const [, bars] of [...buckets.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    result.push({
+      time:  bars[0]!.time,
+      open:  bars[0]!.open,
+      high:  Math.max(...bars.map(b => b.high)),
+      low:   Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1]!.close,
+    })
+  }
+  return result
+}
+
+// ── Strat bar-type markers ────────────────────────────────────────────────────────
 function computeMarkers(data: OHLCBar[]): BarMarker[] {
   const out: BarMarker[] = []
   for (let i = 1; i < data.length; i++) {
@@ -113,7 +148,8 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
 function buildTodayDBar(realBars: Record<string, OHLCBar[]>): OHLCBar | null {
   const min5 = realBars['5']
   if (!min5 || min5.length === 0) return null
-  const todaySec = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+  const _n = new Date()
+  const todaySec = Math.floor(Date.UTC(_n.getUTCFullYear(), _n.getUTCMonth(), _n.getUTCDate()) / 1000)
   const todayBars = min5.filter(b => b.time >= todaySec)
   if (todayBars.length === 0) return null
   return {
@@ -140,7 +176,8 @@ async function buildCharts(): Promise<void> {
 
   // Patch today's partial D bar from 5-min intraday so D panel shows today
   if (hasReal && realBars['D']) {
-    const todaySec = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+    const _n = new Date()
+    const todaySec = Math.floor(Date.UTC(_n.getUTCFullYear(), _n.getUTCMonth(), _n.getUTCDate()) / 1000)
     const lastDTs  = realBars['D'][realBars['D'].length - 1]?.time ?? 0
     if (lastDTs < todaySec) {
       const todayBar = buildTodayDBar(realBars)
@@ -154,6 +191,12 @@ async function buildCharts(): Promise<void> {
         realBars['D'] = [...realBars['D'], todayBar]
       }
     }
+  }
+
+  // Rebuild weekly bars from the patched daily bars so the current week
+  // (and today's partial bar) is reflected correctly.
+  if (hasReal && realBars['D']?.length) {
+    realBars['W'] = buildWeeklyBars(realBars['D'])
   }
 
   // Populate per-panel data BEFORE setting loading = false so charts mount with data
@@ -180,7 +223,8 @@ watch(currentRow, (newRow) => {
   const livePrice = newRow.last
   if (!livePrice) return
 
-  const todaySec = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000)
+  const _n = new Date()
+  const todaySec = Math.floor(Date.UTC(_n.getUTCFullYear(), _n.getUTCMonth(), _n.getUTCDate()) / 1000)
 
   PANELS.forEach((panel, idx) => {
     const arr = panelBars[idx]!.value
@@ -200,7 +244,26 @@ watch(currentRow, (newRow) => {
         }]
         return
       }
+    } else if (panel.key === 'W') {
+      // Compute this week's Monday 00:00 UTC
+      const now = new Date()
+      const dow = now.getUTCDay() || 7  // 1=Mon…7=Sun
+      const weekStartSec = Math.floor(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (dow - 1)) / 1000
+      )
+      if (lb.time < weekStartSec) {
+        // A new week has started — append a fresh weekly bar
+        panelBars[idx]!.value = [...arr, {
+          time: weekStartSec, open: livePrice, high: livePrice, low: livePrice, close: livePrice,
+        }]
+        return
+      }
+      updated = { time: lb.time, open: lb.open,
+        high: Math.max(lb.high, livePrice), low: Math.min(lb.low, livePrice), close: livePrice }
     } else {
+      // Intraday (5M, 1H): only update the last bar's OHLC from the live price.
+      // New bars are created by server data polls only — never from a live price tick,
+      // because we have no quote timestamp and delayed data makes Date.now() incorrect.
       updated = { time: lb.time, open: lb.open,
         high: Math.max(lb.high, livePrice), low: Math.min(lb.low, livePrice), close: livePrice }
     }

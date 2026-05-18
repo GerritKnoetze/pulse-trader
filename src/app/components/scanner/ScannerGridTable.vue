@@ -28,6 +28,7 @@ import type { ColDef } from '~/composables/useGridColumns'
 
 const MTF_TFS = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y'] as const
 type MtfTf = typeof MTF_TFS[number]
+const MTF_VISIBLE = new Set<MtfTf>(['1', '5', '60', 'D', 'W'])
 
 const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor, isScanning } = useScanner()
 const { openTab } = useChartTabs()
@@ -132,7 +133,7 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 </script>
 
 <template>
-  <div class="scanner-grid-scroll">
+  <div class="scanner-grid-scroll" :style="isScanning ? { overflow: 'hidden' } : {}">
     <!-- Loading overlay -->
     <LoadingOverlay v-if="isScanning" label="Scanning market..." />
     <table class="scanner-table">
@@ -212,7 +213,7 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
                 <span
                   v-for="tf in MTF_TFS"
                   :key="tf"
-                  :class="['mtf-chip', 'mtf-' + row.mtf[tf as MtfTf]]"
+                  :class="['mtf-chip', 'mtf-' + row.mtf[tf as MtfTf], MTF_VISIBLE.has(tf) ? '' : 'mtf-chip--hidden']"
                 >{{ tf }}</span>
               </span>
             </template>
@@ -578,6 +579,10 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
   border-radius: 3px;
   letter-spacing: 0.01em;
   line-height: 1.5;
+}
+
+.mtf-chip--hidden {
+  display: none;
 }
 
 .mtf-up {

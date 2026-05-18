@@ -17,8 +17,13 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useChartSync } from '~/composables/useChartSync'
 import { useDrawingTools } from '~/composables/useDrawingTools'
+import { hlDrawings, hrDrawings, vlDrawings, rayDrawings, tlDrawings, allocDrawingId, subscribeDrawings, notifyDrawingsChanged } from '~/composables/useDrawings'
 import HorizontalLineLayer, { type HorizontalLineDrawing } from './drawing/HorizontalLine.vue'
 import HorizontalRayLayer,  { type HorizontalRayDrawing  } from './drawing/HorizontalRay.vue'
+import VerticalLineLayer,   { type VerticalLineDrawing   } from './drawing/VerticalLine.vue'
+import RayLayer,            { type RayDrawing            } from './drawing/Ray.vue'
+import TrendlineLayer,      { type TrendlineDrawing      } from './drawing/Trendline.vue'
+import RulerLayer,          { type RulerDrawing          } from './drawing/Ruler.vue'
 
 // ── TradingView dark-theme palette ────────────────────────────────────────────
 const TV = {
@@ -69,6 +74,10 @@ const barsCvs = ref<HTMLCanvasElement | null>(null)
 const uiCvs   = ref<HTMLCanvasElement | null>(null)
 const hlLayer = ref<InstanceType<typeof HorizontalLineLayer> | null>(null)
 const hrLayer = ref<InstanceType<typeof HorizontalRayLayer>  | null>(null)
+const vlLayer = ref<InstanceType<typeof VerticalLineLayer>   | null>(null)
+const rayLayer    = ref<InstanceType<typeof RayLayer>           | null>(null)
+const tlLayer     = ref<InstanceType<typeof TrendlineLayer>    | null>(null)
+const rulerLayer  = ref<InstanceType<typeof RulerLayer>        | null>(null)
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 let   PAW   = 52   // right price-axis width (px) — recalculated dynamically
@@ -94,6 +103,21 @@ const barToX = (i: number) => (i - vFrom) / (vTo - vFrom) * plW
 const prToY  = (p: number) => plH - (p - pMin) / (pMax - pMin) * plH
 const xToBar = (x: number) => vFrom + x / plW * (vTo - vFrom)
 const yToPr  = (y: number) => pMin  + (1 - y / plH) * (pMax - pMin)
+
+// Binary-search props.bars for the bar whose .time is closest to the given
+// unix timestamp.  Returns a local bar index valid for this chart instance.
+function timeToBar(time: number): number {
+  const arr = props.bars
+  if (!arr.length) return 0
+  let lo = 0, hi = arr.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (arr[mid]!.time < time) lo = mid + 1
+    else hi = mid
+  }
+  if (lo > 0 && Math.abs(arr[lo - 1]!.time - time) < Math.abs(arr[lo]!.time - time)) return lo - 1
+  return lo
+}
 
 function cx(cv: HTMLCanvasElement | null): CanvasRenderingContext2D | null {
   return cv?.getContext('2d') ?? null
@@ -161,6 +185,10 @@ function resizeAll(): void {
   }
   hlLayer.value?.resize(csW, csH, dpr)
   hrLayer.value?.resize(csW, csH, dpr)
+  vlLayer.value?.resize(csW, csH, dpr)
+  rayLayer.value?.resize(csW, csH, dpr)
+  tlLayer.value?.resize(csW, csH, dpr)
+  rulerLayer.value?.resize(csW, csH, dpr)
 }
 
 // ── Layer: background / grid ──────────────────────────────────────────────────
@@ -404,6 +432,12 @@ function drawUI(): void {
     }
   }
 
+  // Snap the vertical crosshair to the nearest candle centre (horizontal stays freeform)
+  if (isHovered && props.bars.length) {
+    const snapBi = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(drawX))))
+    drawX = barToX(snapBi + 0.5)
+  }
+
   c.clearRect(0, 0, csW, csH)
   if (drawX < 0 || drawX > plW || drawY < 0 || drawY > plH) return
 
@@ -422,6 +456,91 @@ function drawUI(): void {
   c.moveTo(0, drawY);  c.lineTo(plW, drawY)
   c.stroke()
   c.setLineDash([])
+
+  // ── Ray pending preview (dashed line from anchor to cursor) ──────────────
+  if (isHovered && activeTool.value === 'ray' && rayPending !== null && props.bars.length) {
+    const px1 = barToX(rayPending.barIndex + 0.5)
+    const py1 = prToY(rayPending.price)
+    if (px1 !== drawX) {
+      const slope   = (drawY - py1) / (drawX - px1)
+      const goRight = drawX > px1
+      const edgeX   = goRight ? plW : 0
+      const edgeY   = py1 + slope * (edgeX - px1)
+      let fromX = px1, fromY = py1
+      if  (goRight && px1 < 0)   { fromX = 0;   fromY = py1 + slope * (0   - px1) }
+      if (!goRight && px1 > plW) { fromX = plW;  fromY = py1 + slope * (plW - px1) }
+      c.save()
+      c.beginPath(); c.rect(0, 0, plW, plH); c.clip()
+      c.strokeStyle = '#f0c040'
+      c.lineWidth   = 1
+      c.setLineDash([4, 4])
+      c.beginPath()
+      c.moveTo(fromX, fromY); c.lineTo(edgeX, edgeY)
+      c.stroke()
+      c.setLineDash([])
+      c.restore()
+    }
+    // Anchor dot
+    c.beginPath()
+    c.arc(px1, py1, 3, 0, Math.PI * 2)
+    c.strokeStyle = '#f0c040'
+    c.lineWidth   = 1.5
+    c.stroke()
+  }
+
+  // ── Ruler pending preview (semi-transparent rect from anchor to cursor) ────
+  if (isHovered && activeTool.value === 'ruler' && rulerPending !== null && props.bars.length) {
+    const px1 = barToX(rulerPending.barIndex + 0.5)
+    const py1 = prToY(rulerPending.price)
+    const isUp = drawY < py1  // canvas y is inverted
+    c.save()
+    c.beginPath(); c.rect(0, 0, plW, plH); c.clip()
+    const rLineClr = isUp ? '#089981' : '#f23645'
+    c.fillStyle = isUp ? 'rgba(8,153,129,0.10)' : 'rgba(242,54,69,0.10)'
+    c.fillRect(Math.min(px1, drawX), Math.min(py1, drawY), Math.abs(drawX - px1), Math.abs(drawY - py1))
+    c.strokeStyle = rLineClr
+    c.lineWidth   = 1
+    c.setLineDash([])
+    c.beginPath()
+    c.moveTo(Math.min(px1, drawX), py1); c.lineTo(Math.max(px1, drawX), py1)
+    c.moveTo(Math.min(px1, drawX), drawY); c.lineTo(Math.max(px1, drawX), drawY)
+    c.stroke()
+    c.setLineDash([3, 3])
+    c.beginPath()
+    c.moveTo(px1, Math.min(py1, drawY)); c.lineTo(px1, Math.max(py1, drawY))
+    c.moveTo(drawX, Math.min(py1, drawY)); c.lineTo(drawX, Math.max(py1, drawY))
+    c.stroke()
+    c.setLineDash([])
+    c.beginPath()
+    c.arc(px1, py1, 3, 0, Math.PI * 2)
+    c.strokeStyle = rLineClr
+    c.lineWidth   = 1.5
+    c.stroke()
+    c.restore()
+  }
+
+  // ── Trendline pending preview (dashed line from anchor to cursor) ──────────
+  if (isHovered && activeTool.value === 'trendline' && tlPending !== null && props.bars.length) {
+    const px1 = barToX(tlPending.barIndex + 0.5)
+    const py1 = prToY(tlPending.price)
+    c.save()
+    c.beginPath(); c.rect(0, 0, plW, plH); c.clip()
+    c.strokeStyle = '#f0c040'
+    c.lineWidth   = 1
+    c.setLineDash([4, 4])
+    c.beginPath()
+    c.moveTo(px1, py1); c.lineTo(drawX, drawY)
+    c.stroke()
+    c.setLineDash([])
+    for (const [ex, ey] of [[px1, py1], [drawX, drawY]] as [number, number][]) {
+      c.beginPath()
+      c.arc(ex, ey, 3, 0, Math.PI * 2)
+      c.strokeStyle = '#f0c040'
+      c.lineWidth   = 1.5
+      c.stroke()
+    }
+    c.restore()
+  }
 
   // ── Price label (right axis) ──────────────────────────────────────────────
   const price = yToPr(drawY)
@@ -442,7 +561,9 @@ function drawUI(): void {
   c.fillText(pLbl, pX + pW / 2, drawY)
 
   // ── Time label (bottom axis) ──────────────────────────────────────────────
-  const bi  = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(drawX))))
+  // drawX is always at bar-centre (barToX(i + 0.5)), so xToBar returns i + 0.5.
+  // Math.floor gives the correct bar index; Math.round would give i + 1 (off by one).
+  const bi  = Math.max(0, Math.min(props.bars.length - 1, Math.floor(xToBar(drawX))))
   const bar = props.bars[bi]
   if (!bar) return
 
@@ -489,11 +610,12 @@ function drawUI(): void {
 let rafId = 0
 let dirty  = 0
 
-// ── Per-instance drawing objects (plain array — not reactive) ─────────────────
-const hlDrawings: HorizontalLineDrawing[] = []
-let hlNextId = 1
-const hrDrawings: HorizontalRayDrawing[] = []
-let hrNextId = 1
+// ── Per-instance pending state for two-click drawing tools ──────────────────
+let rayPending:   { barIndex: number; price: number } | null = null
+let tlPending:    { barIndex: number; price: number } | null = null
+let rulerPending: { barIndex: number; price: number } | null = null
+// Ruler drawings are LOCAL to this chart instance — not shared across timeframes
+const localRulerDrawings: RulerDrawing[] = []
 
 function schedule(level: 1 | 2): void {
   if (level > dirty) dirty = level
@@ -502,8 +624,12 @@ function schedule(level: 1 | 2): void {
 }
 
 function drawDrawings(): void {
-  hlLayer.value?.redraw(hlDrawings, selectedDrawingId.value, prToY,          plW, plH, csW, csH)
-  hrLayer.value?.redraw(hrDrawings, selectedDrawingId.value, prToY, barToX, plW, plH, csW, csH)
+  hlLayer.value?.redraw(hlDrawings,   selectedDrawingId.value, prToY,                            plW, plH, csW, csH)
+  hrLayer.value?.redraw(hrDrawings,   selectedDrawingId.value, prToY,  barToX, timeToBar,        plW, plH, csW, csH)
+  vlLayer.value?.redraw(vlDrawings,   selectedDrawingId.value, barToX, timeToBar,                plW, plH, csW, csH, props.timeVisible)
+  rayLayer.value?.redraw(rayDrawings, selectedDrawingId.value, barToX, prToY,   yToPr, timeToBar, plW, plH, csW, csH)
+  tlLayer.value?.redraw(tlDrawings,          selectedDrawingId.value, barToX, prToY,   timeToBar,        plW, plH, csW, csH)
+  rulerLayer.value?.redraw(localRulerDrawings, selectedDrawingId.value, barToX, prToY,   timeToBar,        plW, plH, csW, csH)
 }
 
 // Find horizontal-line drawing within HIT_PX of a Y coordinate
@@ -520,7 +646,68 @@ function findHRNear(x: number, y: number): HorizontalRayDrawing | null {
   const HIT = 6
   for (const d of hrDrawings) {
     if (Math.abs(prToY(d.price) - y) > HIT) continue
-    if (x >= barToX(d.barIndex + 0.5) - HIT) return d
+    if (x >= barToX(timeToBar(d.time) + 0.5) - HIT) return d
+  }
+  return null
+}
+
+// Find vertical-line drawing within HIT_PX of an X coordinate
+function findVLNear(x: number): VerticalLineDrawing | null {
+  const HIT = 6
+  for (const d of vlDrawings) {
+    if (Math.abs(barToX(timeToBar(d.time) + 0.5) - x) <= HIT) return d
+  }
+  return null
+}
+
+// Find ray drawing within HIT_PX of the extended line
+function findRayNear(x: number, y: number): RayDrawing | null {
+  const HIT = 6
+  for (const d of rayDrawings) {
+    const x1 = barToX(timeToBar(d.time1) + 0.5)
+    const y1 = prToY(d.price1)
+    const x2 = barToX(timeToBar(d.time2) + 0.5)
+    const y2 = prToY(d.price2)
+    if (x1 === x2) continue
+    const goRight = x2 > x1
+    if  (goRight && x < x1 - HIT) continue   // left of origin
+    if (!goRight && x > x1 + HIT) continue   // right of origin
+    const dx = x2 - x1, dy = y2 - y1
+    const dist = Math.abs(dy * x - dx * y + x2 * y1 - y2 * x1) / Math.sqrt(dx * dx + dy * dy)
+    if (dist <= HIT) return d
+  }
+  return null
+}
+
+// Find ruler drawing — hit inside the bounding rectangle
+function findRulerNear(x: number, y: number): RulerDrawing | null {
+  const HIT = 6
+  for (const d of localRulerDrawings) {
+    const x1 = barToX(timeToBar(d.time1) + 0.5)
+    const y1 = prToY(d.price1)
+    const x2 = barToX(timeToBar(d.time2) + 0.5)
+    const y2 = prToY(d.price2)
+    if (x >= Math.min(x1, x2) - HIT && x <= Math.max(x1, x2) + HIT &&
+        y >= Math.min(y1, y2) - HIT && y <= Math.max(y1, y2) + HIT) return d
+  }
+  return null
+}
+
+// Find trendline drawing within HIT_PX of the line segment
+function findTrendlineNear(x: number, y: number): TrendlineDrawing | null {
+  const HIT = 6
+  for (const d of tlDrawings) {
+    const x1 = barToX(timeToBar(d.time1) + 0.5)
+    const y1 = prToY(d.price1)
+    const x2 = barToX(timeToBar(d.time2) + 0.5)
+    const y2 = prToY(d.price2)
+    const dx = x2 - x1, dy = y2 - y1
+    const lenSq = dx * dx + dy * dy
+    if (lenSq === 0) continue
+    const t     = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / lenSq))
+    const nearX = x1 + t * dx
+    const nearY = y1 + t * dy
+    if (Math.sqrt((x - nearX) ** 2 + (y - nearY) ** 2) <= HIT) return d
   }
   return null
 }
@@ -553,8 +740,157 @@ let isDrag   = false
 let panMoved = false   // true once pointer moved enough to count as a pan
 let dx0 = 0, vFrom0 = 0, vTo0 = 0
 
+// ── Anchor drag state ────────────────────────────────────────────────────────
+// anchor 3 = center circle (whole-line drag for ray/tl)
+let anchorDrag: {
+  type: 'hl' | 'hr' | 'vl' | 'ray' | 'tl' | 'ruler'
+  id: number
+  anchor: 1 | 2 | 3
+  initX: number; initY: number
+  snap?: { time1: number; price1: number; time2: number; price2: number }
+} | null = null
+
+// Returns the anchor hit by (x,y) on the currently selected drawing, or null.
+function findSelectedAnchorHit(x: number, y: number): { type: 'hl' | 'hr' | 'vl' | 'ray' | 'tl' | 'ruler'; id: number; anchor: 1 | 2 | 3 } | null {
+  const sid = selectedDrawingId.value
+  if (sid === null) return null
+  const HIT = 8
+
+  const hl = hlDrawings.find(d => d.id === sid)
+  if (hl && Math.hypot(x - plW / 2, y - prToY(hl.price)) <= HIT)
+    return { type: 'hl', id: sid, anchor: 1 }
+
+  const hr = hrDrawings.find(d => d.id === sid)
+  if (hr && Math.hypot(x - Math.max(0, barToX(timeToBar(hr.time) + 0.5)), y - prToY(hr.price)) <= HIT)
+    return { type: 'hr', id: sid, anchor: 1 }
+
+  const vl = vlDrawings.find(d => d.id === sid)
+  if (vl && Math.hypot(x - barToX(timeToBar(vl.time) + 0.5), y - plH / 2) <= HIT)
+    return { type: 'vl', id: sid, anchor: 1 }
+
+  const ray = rayDrawings.find(d => d.id === sid)
+  if (ray) {
+    if (Math.hypot(x - barToX(timeToBar(ray.time1) + 0.5), y - prToY(ray.price1)) <= HIT)
+      return { type: 'ray', id: sid, anchor: 1 }
+    if (Math.hypot(x - barToX(timeToBar(ray.time2) + 0.5), y - prToY(ray.price2)) <= HIT)
+      return { type: 'ray', id: sid, anchor: 2 }
+    const rMidX = (barToX(timeToBar(ray.time1) + 0.5) + barToX(timeToBar(ray.time2) + 0.5)) / 2
+    const rMidY = (prToY(ray.price1) + prToY(ray.price2)) / 2
+    if (Math.hypot(x - rMidX, y - rMidY) <= HIT)
+      return { type: 'ray', id: sid, anchor: 3 }
+  }
+
+  const tl = tlDrawings.find(d => d.id === sid)
+  if (tl) {
+    if (Math.hypot(x - barToX(timeToBar(tl.time1) + 0.5), y - prToY(tl.price1)) <= HIT)
+      return { type: 'tl', id: sid, anchor: 1 }
+    if (Math.hypot(x - barToX(timeToBar(tl.time2) + 0.5), y - prToY(tl.price2)) <= HIT)
+      return { type: 'tl', id: sid, anchor: 2 }
+    const tMidX = (barToX(timeToBar(tl.time1) + 0.5) + barToX(timeToBar(tl.time2) + 0.5)) / 2
+    const tMidY = (prToY(tl.price1) + prToY(tl.price2)) / 2
+    if (Math.hypot(x - tMidX, y - tMidY) <= HIT)
+      return { type: 'tl', id: sid, anchor: 3 }
+  }
+
+  const ruler = localRulerDrawings.find(d => d.id === sid)
+  if (ruler) {
+    const rx1 = barToX(timeToBar(ruler.time1) + 0.5)
+    const ry1 = prToY(ruler.price1)
+    const rx2 = barToX(timeToBar(ruler.time2) + 0.5)
+    const ry2 = prToY(ruler.price2)
+    if (Math.hypot(x - rx1, y - ry1) <= HIT) return { type: 'ruler', id: sid, anchor: 1 }
+    if (Math.hypot(x - rx2, y - ry2) <= HIT) return { type: 'ruler', id: sid, anchor: 2 }
+    if (Math.hypot(x - (rx1 + rx2) / 2, y - (ry1 + ry2) / 2) <= HIT)
+      return { type: 'ruler', id: sid, anchor: 3 }
+  }
+
+  return null
+}
+
+// Mutate the dragged anchor to the given canvas position.
+function applyAnchorDrag(x: number, y: number): void {
+  if (!anchorDrag) return
+  const { type, id, anchor, initX, initY, snap } = anchorDrag
+
+  // Whole-line drag (center circle, anchor === 3)
+  if (anchor === 3 && snap) {
+    const dBar   = xToBar(x) - xToBar(initX)
+    const dPrice = yToPr(y)  - yToPr(initY)
+    const clamp  = (bi: number) => Math.max(0, Math.min(props.bars.length - 1, Math.round(bi)))
+    if (type === 'ray') {
+      const d = rayDrawings.find(d => d.id === id)
+      if (d) {
+        const newBi1 = clamp(timeToBar(snap.time1) + dBar)
+        const newBi2 = clamp(timeToBar(snap.time2) + dBar)
+        d.barIndex1 = newBi1; d.time1 = props.bars[newBi1]?.time ?? snap.time1; d.price1 = snap.price1 + dPrice
+        d.barIndex2 = newBi2; d.time2 = props.bars[newBi2]?.time ?? snap.time2; d.price2 = snap.price2 + dPrice
+      }
+    } else if (type === 'tl') {
+      const d = tlDrawings.find(d => d.id === id)
+      if (d) {
+        const newBi1 = clamp(timeToBar(snap.time1) + dBar)
+        const newBi2 = clamp(timeToBar(snap.time2) + dBar)
+        d.barIndex1 = newBi1; d.time1 = props.bars[newBi1]?.time ?? snap.time1; d.price1 = snap.price1 + dPrice
+        d.barIndex2 = newBi2; d.time2 = props.bars[newBi2]?.time ?? snap.time2; d.price2 = snap.price2 + dPrice
+      }
+    } else if (type === 'ruler') {
+      const d = localRulerDrawings.find(d => d.id === id)
+      if (d) {
+        const newBi1 = clamp(timeToBar(snap.time1) + dBar)
+        const newBi2 = clamp(timeToBar(snap.time2) + dBar)
+        d.barIndex1 = newBi1; d.time1 = props.bars[newBi1]?.time ?? snap.time1; d.price1 = snap.price1 + dPrice
+        d.barIndex2 = newBi2; d.time2 = props.bars[newBi2]?.time ?? snap.time2; d.price2 = snap.price2 + dPrice
+      }
+      return  // local drawing — no notifyDrawingsChanged needed
+    }
+    return
+  }
+
+  // Endpoint drag (anchor 1 or 2): absolute position
+  const bi    = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(x))))
+  const price = yToPr(y)
+
+  if (type === 'hl') {
+    const d = hlDrawings.find(d => d.id === id)
+    if (d) d.price = price
+  } else if (type === 'hr') {
+    const d = hrDrawings.find(d => d.id === id)
+    if (d) { d.price = price; d.barIndex = bi; d.time = props.bars[bi]?.time ?? d.time }
+  } else if (type === 'vl') {
+    const d = vlDrawings.find(d => d.id === id)
+    if (d) { d.barIndex = bi; const bar = props.bars[bi]; if (bar) d.time = bar.time }
+  } else if (type === 'ray') {
+    const d = rayDrawings.find(d => d.id === id)
+    if (d) {
+      if (anchor === 1) { d.barIndex1 = bi; d.time1 = props.bars[bi]?.time ?? d.time1; d.price1 = price }
+      else              { d.barIndex2 = bi; d.time2 = props.bars[bi]?.time ?? d.time2; d.price2 = price }
+    }
+  } else if (type === 'tl') {
+    const d = tlDrawings.find(d => d.id === id)
+    if (d) {
+      if (anchor === 1) { d.barIndex1 = bi; d.time1 = props.bars[bi]?.time ?? d.time1; d.price1 = price }
+      else              { d.barIndex2 = bi; d.time2 = props.bars[bi]?.time ?? d.time2; d.price2 = price }
+    }
+  } else if (type === 'ruler') {
+    const d = localRulerDrawings.find(d => d.id === id)
+    if (d) {
+      if (anchor === 1) { d.barIndex1 = bi; d.time1 = props.bars[bi]?.time ?? d.time1; d.price1 = price }
+      else              { d.barIndex2 = bi; d.time2 = props.bars[bi]?.time ?? d.time2; d.price2 = price }
+    }
+    return  // local drawing — caller schedule(1) is sufficient
+  }
+  notifyDrawingsChanged()
+}
+
 function onMouseMove(e: MouseEvent): void {
   isHovered = true
+  // Anchor drag takes priority over chart pan
+  if (anchorDrag) {
+    applyAnchorDrag(e.offsetX, e.offsetY)
+    cxX = e.offsetX; cxY = e.offsetY
+    schedule(1)
+    return
+  }
   if (isDrag) {
     if (Math.abs(e.clientX - dx0) > 3) panMoved = true
     const shift = (dx0 - e.clientX) / plW * (vTo0 - vFrom0)
@@ -573,16 +909,19 @@ function onMouseMove(e: MouseEvent): void {
     setSyncTime(props.bars[bi]?.time ?? null)
     setSyncPrice(yToPr(cxY))
   }
-  // Cursor: pointer when hovering near a drawing (no active tool)
+  // Cursor: grab over anchor, pointer near a drawing line, crosshair otherwise
   if (wrapEl.value && !isDrag) {
-    const near = activeTool.value === null && e.offsetX < plW &&
-      (!!findHLNear(e.offsetY) || !!findHRNear(e.offsetX, e.offsetY))
-    wrapEl.value.style.cursor = near ? 'pointer' : 'crosshair'
+    const overAnchor = activeTool.value === null && e.offsetX < plW &&
+      !!findSelectedAnchorHit(e.offsetX, e.offsetY)
+    const near = !overAnchor && activeTool.value === null && e.offsetX < plW &&
+      (!!findHLNear(e.offsetY) || !!findHRNear(e.offsetX, e.offsetY) || !!findVLNear(e.offsetX) || !!findRayNear(e.offsetX, e.offsetY) || !!findTrendlineNear(e.offsetX, e.offsetY) || !!findRulerNear(e.offsetX, e.offsetY))
+    wrapEl.value.style.cursor = overAnchor ? 'grab' : near ? 'pointer' : 'crosshair'
   }
   schedule(isDrag ? 2 : 1)
 }
 
 function onMouseLeave(): void {
+  anchorDrag = null
   isHovered  = false
   ctrlHeld   = false
   isDrag     = false
@@ -593,6 +932,29 @@ function onMouseLeave(): void {
 }
 
 function onMouseDown(e: MouseEvent): void {
+  // Check if clicking on an anchor of the selected drawing — start anchor drag
+  if (activeTool.value === null && e.offsetX < plW && e.offsetY < plH) {
+    const hit = findSelectedAnchorHit(e.offsetX, e.offsetY)
+    if (hit) {
+      // For center-circle drag (anchor 3), snapshot the drawing's current positions
+      let snap: { time1: number; price1: number; time2: number; price2: number } | undefined = undefined
+      if (hit.anchor === 3) {
+        if (hit.type === 'ray') {
+          const d = rayDrawings.find(d => d.id === hit.id)
+          if (d) snap = { time1: d.time1, price1: d.price1, time2: d.time2, price2: d.price2 }
+        } else if (hit.type === 'tl') {
+          const d = tlDrawings.find(d => d.id === hit.id)
+          if (d) snap = { time1: d.time1, price1: d.price1, time2: d.time2, price2: d.price2 }
+        } else if (hit.type === 'ruler') {
+          const d = localRulerDrawings.find(d => d.id === hit.id)
+          if (d) snap = { time1: d.time1, price1: d.price1, time2: d.time2, price2: d.price2 }
+        }
+      }
+      anchorDrag = { ...hit, initX: e.offsetX, initY: e.offsetY, snap }
+      if (wrapEl.value) wrapEl.value.style.cursor = 'grabbing'
+      return
+    }
+  }
   isDrag    = true
   panMoved  = false
   dx0       = e.clientX
@@ -601,6 +963,13 @@ function onMouseDown(e: MouseEvent): void {
 }
 
 function onMouseUp(e: MouseEvent): void {
+  if (anchorDrag) {
+    applyAnchorDrag(e.offsetX, e.offsetY)
+    anchorDrag = null
+    if (wrapEl.value) wrapEl.value.style.cursor = 'crosshair'
+    schedule(1)
+    return
+  }
   const wasPan = panMoved
   isDrag   = false
   panMoved = false
@@ -611,37 +980,146 @@ function onChartClick(e: MouseEvent): void {
   if (activeTool.value === 'horizontal-line' && e.offsetX < plW && e.offsetY < plH) {
     const rawPrice  = yToPr(e.offsetY)
     const price     = e.ctrlKey ? snapOHLC(rawPrice) : rawPrice
-    hlDrawings.push({ id: hlNextId++, price })
+    hlDrawings.push({ id: allocDrawingId(), price })
     setActiveTool('horizontal-line') // toggles back to null (auto-deselect)
-    schedule(1)
+    notifyDrawingsChanged()
     return
   }
   if (activeTool.value === 'horizontal-ray' && e.offsetX < plW && e.offsetY < plH) {
     const rawPrice = yToPr(e.offsetY)
     const price    = e.ctrlKey ? snapOHLC(rawPrice) : rawPrice
     const barIndex = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(e.offsetX))))
-    hrDrawings.push({ id: hrNextId++, price, barIndex })
+    hrDrawings.push({ id: allocDrawingId(), price, barIndex, time: props.bars[barIndex]?.time ?? 0 })
     setActiveTool('horizontal-ray')
-    schedule(1)
+    notifyDrawingsChanged()
+    return
+  }
+  if (activeTool.value === 'vertical-line' && e.offsetX < plW && e.offsetY < plH) {
+    const barIndex = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(e.offsetX))))
+    const bar      = props.bars[barIndex]
+    if (bar) vlDrawings.push({ id: allocDrawingId(), barIndex, time: bar.time })
+    setActiveTool('vertical-line')
+    notifyDrawingsChanged()
+    return
+  }
+  if (activeTool.value === 'ray' && e.offsetX < plW && e.offsetY < plH) {
+    const barIndex = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(e.offsetX))))
+    const price    = yToPr(e.offsetY)
+    if (rayPending === null) {
+      rayPending = { barIndex, price }   // first click — anchor origin
+    } else {
+      if (barIndex !== rayPending.barIndex) {
+        rayDrawings.push({
+          id:        allocDrawingId(),
+          barIndex1: rayPending.barIndex,
+          price1:    rayPending.price,
+          barIndex2: barIndex,
+          price2:    price,
+          time1:     props.bars[rayPending.barIndex]?.time ?? 0,
+          time2:     props.bars[barIndex]?.time ?? 0,
+        })
+      }
+      rayPending = null
+      setActiveTool('ray')   // toggle off after second click
+    }
+    notifyDrawingsChanged()
+    return
+  }
+  if (activeTool.value === 'trendline' && e.offsetX < plW && e.offsetY < plH) {
+    const barIndex = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(e.offsetX))))
+    const price    = yToPr(e.offsetY)
+    if (tlPending === null) {
+      tlPending = { barIndex, price }   // first click — anchor start
+    } else {
+      if (barIndex !== tlPending.barIndex || price !== tlPending.price) {
+        tlDrawings.push({
+          id:        allocDrawingId(),
+          barIndex1: tlPending.barIndex,
+          price1:    tlPending.price,
+          barIndex2: barIndex,
+          price2:    price,
+          time1:     props.bars[tlPending.barIndex]?.time ?? 0,
+          time2:     props.bars[barIndex]?.time ?? 0,
+        })
+      }
+      tlPending = null
+      setActiveTool('trendline')   // toggle off after second click
+    }
+    notifyDrawingsChanged()
+    return
+  }
+  if (activeTool.value === 'ruler' && e.offsetX < plW && e.offsetY < plH) {
+    const barIndex = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(e.offsetX))))
+    const price    = yToPr(e.offsetY)
+    if (rulerPending === null) {
+      rulerPending = { barIndex, price }   // first click — anchor start
+    } else {
+      if (barIndex !== rulerPending.barIndex || price !== rulerPending.price) {
+        localRulerDrawings.push({
+          id:        allocDrawingId(),
+          barIndex1: rulerPending.barIndex,
+          price1:    rulerPending.price,
+          barIndex2: barIndex,
+          price2:    price,
+          time1:     props.bars[rulerPending.barIndex]?.time ?? 0,
+          time2:     props.bars[barIndex]?.time ?? 0,
+        })
+      }
+      rulerPending = null
+      setActiveTool('ruler')   // toggle off after second click
+    }
+    schedule(1)   // local drawing — no need to notify other charts
     return
   }
   // Selection mode — no active tool
   if (activeTool.value === null && e.offsetX < plW && e.offsetY < plH) {
     const hitHL = findHLNear(e.offsetY)
     const hitHR = !hitHL ? findHRNear(e.offsetX, e.offsetY) : null
+    const hitVL  = !hitHL && !hitHR ? findVLNear(e.offsetX) : null
+    const hitRay = !hitHL && !hitHR && !hitVL ? findRayNear(e.offsetX, e.offsetY) : null
+    const hitTL    = !hitHL && !hitHR && !hitVL && !hitRay ? findTrendlineNear(e.offsetX, e.offsetY) : null
+    const hitRuler = !hitHL && !hitHR && !hitVL && !hitRay && !hitTL ? findRulerNear(e.offsetX, e.offsetY) : null
     if (hitHL) {
       const hitId = hitHL.id
       selectDrawing(hitId, () => {
         const idx = hlDrawings.findIndex(d => d.id === hitId)
         if (idx >= 0) hlDrawings.splice(idx, 1)
-        schedule(1)
+        notifyDrawingsChanged()
       })
     } else if (hitHR) {
       const hitId = hitHR.id
       selectDrawing(hitId, () => {
         const idx = hrDrawings.findIndex(d => d.id === hitId)
         if (idx >= 0) hrDrawings.splice(idx, 1)
-        schedule(1)
+        notifyDrawingsChanged()
+      })
+    } else if (hitVL) {
+      const hitId = hitVL.id
+      selectDrawing(hitId, () => {
+        const idx = vlDrawings.findIndex(d => d.id === hitId)
+        if (idx >= 0) vlDrawings.splice(idx, 1)
+        notifyDrawingsChanged()
+      })
+    } else if (hitRay) {
+      const hitId = hitRay.id
+      selectDrawing(hitId, () => {
+        const idx = rayDrawings.findIndex(d => d.id === hitId)
+        if (idx >= 0) rayDrawings.splice(idx, 1)
+        notifyDrawingsChanged()
+      })
+    } else if (hitTL) {
+      const hitId = hitTL.id
+      selectDrawing(hitId, () => {
+        const idx = tlDrawings.findIndex(d => d.id === hitId)
+        if (idx >= 0) tlDrawings.splice(idx, 1)
+        notifyDrawingsChanged()
+      })
+    } else if (hitRuler) {
+      const hitId = hitRuler.id
+      selectDrawing(hitId, () => {
+        const idx = localRulerDrawings.findIndex(d => d.id === hitId)
+        if (idx >= 0) localRulerDrawings.splice(idx, 1)
+        schedule(1)   // local — no cross-chart notification needed
       })
     } else {
       clearSelection()
@@ -718,6 +1196,31 @@ function findBarByTime(time: number): number {
   return lo
 }
 
+// ── Context menu ─────────────────────────────────────────────────────────────
+const ctxMenu = ref<{ x: number; y: number } | null>(null)
+
+function onContextMenu(e: MouseEvent): void {
+  e.preventDefault()
+  ctxMenu.value = { x: e.clientX, y: e.clientY }
+}
+
+function dismissCtxMenu(): void {
+  ctxMenu.value = null
+}
+
+function deleteAllDrawings(): void {
+  hlDrawings.splice(0)
+  hrDrawings.splice(0)
+  vlDrawings.splice(0)
+  rayDrawings.splice(0)
+  tlDrawings.splice(0)
+  localRulerDrawings.splice(0)
+  clearSelection()
+  notifyDrawingsChanged()
+  schedule(1)
+  dismissCtxMenu()
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 let ro: ResizeObserver | null = null
 
@@ -726,9 +1229,11 @@ onMounted(() => {
   resetView()
   ro = new ResizeObserver(() => { resizeAll(); schedule(2) })
   if (wrapEl.value) ro.observe(wrapEl.value)
-  // Keep ctrlHeld in sync when key changes without mouse movement
   window.addEventListener('keydown', onKeyCtrl)
   window.addEventListener('keyup',   onKeyCtrl)
+  // Redraw this chart whenever any drawing changes (including changes made on other timeframes)
+  const unsub = subscribeDrawings(() => schedule(1))
+  onUnmounted(unsub)
 })
 
 onUnmounted(() => {
@@ -762,6 +1267,12 @@ watch(() => props.markers, () => schedule(2), { deep: false })
 watch(syncTime, () => { if (!isHovered) schedule(1) })
 watch(syncPrice, () => { if (!isHovered) schedule(1) })
 watch(syncEnabled, (enabled) => { if (!enabled && !isHovered) { cxX = -1; cxY = -1; schedule(1) } })
+watch(activeTool, (tool) => {
+  if (tool !== 'ray')       rayPending   = null
+  if (tool !== 'trendline') tlPending    = null
+  if (tool !== 'ruler')     rulerPending = null
+  schedule(1)
+})
 watch(selectedDrawingId, () => schedule(1))
 </script>
 
@@ -779,12 +1290,33 @@ watch(selectedDrawingId, () => schedule(1))
     @mouseup="onMouseUp"
     @wheel.prevent="onWheel"
     @dblclick="onDblClick"
+    @contextmenu.prevent="onContextMenu"
   >
+    <!-- Right-click context menu -->
+    <Teleport to="body">
+      <div
+        v-if="ctxMenu"
+        class="pc-ctx-backdrop"
+        @mousedown.self="dismissCtxMenu"
+        @contextmenu.prevent
+      >
+        <ul
+          class="pc-ctx-menu"
+          :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        >
+          <li @click="deleteAllDrawings">Delete All Drawings</li>
+        </ul>
+      </div>
+    </Teleport>
     <canvas ref="bgCvs"   class="pc-layer" />
     <canvas ref="barsCvs" class="pc-layer" />
     <canvas ref="uiCvs"   class="pc-layer" />
     <HorizontalLineLayer ref="hlLayer" />
     <HorizontalRayLayer  ref="hrLayer" />
+    <VerticalLineLayer   ref="vlLayer" />
+    <RayLayer            ref="rayLayer" />
+    <TrendlineLayer      ref="tlLayer" />
+    <RulerLayer          ref="rulerLayer" />
   </div>
 </template>
 
@@ -804,5 +1336,38 @@ watch(selectedDrawingId, () => schedule(1))
   top:    0;
   left:   0;
   pointer-events: none;
+}
+</style>
+
+<style>
+.pc-ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
+.pc-ctx-menu {
+  position: absolute;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.6);
+  min-width: 180px;
+  font: 12px -apple-system, BlinkMacSystemFont, 'Trebuchet MS', sans-serif;
+  color: #d1d4dc;
+}
+
+.pc-ctx-menu li {
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pc-ctx-menu li:hover {
+  background: #2a2d2e;
+  color: #ffffff;
 }
 </style>

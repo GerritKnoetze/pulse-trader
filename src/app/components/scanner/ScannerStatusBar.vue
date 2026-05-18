@@ -56,7 +56,11 @@ const wsDotClass = computed(() => {
 
     <div class="status-spacer" />
 
-    <span class="log-toggle-hint">{{ logOpen ? '▼ Console' : '▲ Console' }}</span>
+    <div class="log-toggle-notch">
+      <span class="notch-dot" />
+      <span class="notch-dot" />
+      <span class="notch-dot" />
+    </div>
 
     <span class="ws-status" :class="wsDotClass">
       <span class="ws-dot" />
@@ -77,6 +81,7 @@ const wsDotClass = computed(() => {
   flex-shrink: 0;
   cursor: pointer;
   user-select: none;
+  position: relative;
 }
 .scanner-status-bar:hover { background: var(--color-background-mute, #1e1e1e); }
 .scanner-status-bar.log-open { border-bottom: 1px solid var(--color-border); }
@@ -99,11 +104,30 @@ const wsDotClass = computed(() => {
 
 .status-spacer { flex: 1; }
 
-.log-toggle-hint {
-  font-size: 0.7rem;
-  color: #444;
-  letter-spacing: 0.04em;
-  margin-right: 0.5rem;
+.log-toggle-notch {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: 3rem;
+  height: 8px;
+  border-radius: 0 0 8px 8px;
+  background: #333;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+  padding-bottom: 2px;
+}
+
+.notch-dot {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #666;
+  flex-shrink: 0;
 }
 
 .ws-status {

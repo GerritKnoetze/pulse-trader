@@ -8,7 +8,8 @@ import { ref } from 'vue'
 export interface HorizontalRayDrawing {
   id:       number
   price:    number
-  barIndex: number   // bar where the ray originates
+  barIndex: number   // originating chart bar index (local cache)
+  time:     number   // unix seconds — canonical cross-timeframe anchor
 }
 
 const YELLOW        = '#f0c040'
@@ -31,6 +32,7 @@ function redraw(
   selectedId: number | null,
   prToY:      (p: number) => number,
   barToX:     (i: number) => number,
+  timeToBar:  (t: number) => number,
   plW:        number,
   plH:        number,
   csW:        number,
@@ -46,7 +48,7 @@ function redraw(
 
   for (const d of drawings) {
     const y          = prToY(d.price)
-    const startX     = barToX(d.barIndex + 0.5)
+    const startX     = barToX(timeToBar(d.time) + 0.5)
     const isSelected = d.id === selectedId
 
     if (y < 0 || y > plH) continue
@@ -61,16 +63,16 @@ function redraw(
     c.moveTo(drawFrom, y); c.lineTo(plW, y)
     c.stroke()
 
-    // Selection: hollow circle at mid-point of the visible portion
+    // Selection: hollow circle at the ray's origin (first click anchor)
     if (isSelected) {
-      const midX = (drawFrom + plW) / 2
+      const anchorX = Math.max(0, startX)
       c.beginPath()
-      c.arc(midX, y, 4, 0, Math.PI * 2)
+      c.arc(anchorX, y, 4, 0, Math.PI * 2)
       c.strokeStyle = YELLOW
       c.lineWidth   = 1.5
       c.stroke()
       c.beginPath()
-      c.arc(midX, y, 2.5, 0, Math.PI * 2)
+      c.arc(anchorX, y, 2.5, 0, Math.PI * 2)
       c.fillStyle = '#121212'
       c.fill()
     }
