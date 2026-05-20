@@ -6,11 +6,13 @@ import { useChartSync } from '~/composables/useChartSync'
 import { useDrawingTools } from '~/composables/useDrawingTools'
 
 const { syncEnabled } = useChartSync()
-const { activeTool, setActiveTool, selectedDrawingId, deleteSelected } = useDrawingTools()
+const { activeTool, setActiveTool, selectedDrawingId, deleteSelected, magnetEnabled } = useDrawingTools()
 
 const symbolSearchOpen = ref(false)
+const ctrlActive       = ref(false)
 
 function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key === 'Control') ctrlActive.value = true
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
     e.preventDefault()
     symbolSearchOpen.value = true
@@ -21,8 +23,18 @@ function onGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
+function onGlobalKeyup(e: KeyboardEvent) {
+  if (e.key === 'Control') ctrlActive.value = false
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('keyup', onGlobalKeyup)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('keyup', onGlobalKeyup)
+})
 </script>
 
 <template>
@@ -53,7 +65,28 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
         <line x1="9" y1="7" x2="14" y2="7" />
         <circle cx="7" cy="7" r="2.2" />
       </svg>
-      Sync
+    </button>
+
+    <!-- Magnet snap toggle -->
+    <button
+      class="sync-btn magnet-btn"
+      :class="{ active: magnetEnabled, 'ctrl-hint': ctrlActive && !magnetEnabled }"
+      title="Snap crosshair to OHLC (hold Ctrl for temporary)"
+      @click="magnetEnabled = !magnetEnabled"
+    >
+      <svg class="sync-icon" viewBox="0 0 14 19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt">
+        <!-- White-filled pole areas (left and right) -->
+        <rect x="1" y="15.25" width="4" height="3.25" fill="white" stroke="none" />
+        <rect x="9" y="15.25" width="4" height="3.25" fill="white" stroke="none" />
+        <!-- Outer horseshoe -->
+        <path d="M 1 18.5 L 1 7 A 6 6 0 0 1 13 7 L 13 18.5" />
+        <!-- Inner horseshoe -->
+        <path d="M 5 18.5 L 5 7 A 2 2 0 0 1 9 7 L 9 18.5" />
+        <!-- Left pole cap -->
+        <line x1="1" y1="18.5" x2="5" y2="18.5" />
+        <!-- Right pole cap -->
+        <line x1="9" y1="18.5" x2="13" y2="18.5" />
+      </svg>
     </button>
 
     <div class="toolbar-divider" />
@@ -72,10 +105,10 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
     <!-- Ray: two hollow dots, line between and extending past, gaps at circles -->
     <button class="tool-btn" :class="{ active: activeTool === 'ray' }" title="Ray" @click="setActiveTool('ray')">
       <svg class="tool-icon" viewBox="0 0 20 14" fill="none">
-        <line x1="5"  y1="10.5" x2="12"  y2="6.5" stroke="currentColor" stroke-width="1.4" />
-        <line x1="15" y1="4.5"  x2="20"  y2="1"   stroke="currentColor" stroke-width="1.4" />
-        <circle cx="3.5"  cy="11.5" r="1.8" stroke="currentColor" stroke-width="1.4" />
-        <circle cx="13.5" cy="5.5"  r="1.8" stroke="currentColor" stroke-width="1.4" />
+        <line x1="4.6" y1="10.2" x2="11.4" y2="6.8" stroke="currentColor" stroke-width="1.4" />
+        <line x1="14.6" y1="5.2" x2="20"   y2="2.5" stroke="currentColor" stroke-width="1.4" />
+        <circle cx="3"  cy="11" r="1.8" stroke="currentColor" stroke-width="1.4" />
+        <circle cx="13" cy="6"  r="1.8" stroke="currentColor" stroke-width="1.4" />
       </svg>
     </button>
 
@@ -189,20 +222,18 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 
 /* Sync crosshair toggle */
 .sync-btn {
-  display:     flex;
-  align-items: center;
-  gap:         0.35rem;
-  background:  none;
-  border:      1px solid var(--color-border);
-  color:       var(--color-text-soft);
-  font-size:   0.82rem;
-  font-weight: 600;
-  padding:     0.28rem 0.65rem;
-  border-radius: var(--radius-sm);
-  cursor:      pointer;
-  transition:  all 0.15s ease;
-  white-space: nowrap;
-  flex-shrink: 0;
+  display:         flex;
+  align-items:     center;
+  justify-content: center;
+  background:      none;
+  border:          1px solid var(--color-border);
+  color:           var(--color-text-soft);
+  padding:         0 0.45rem;
+  height:          1.75rem;
+  border-radius:   var(--radius-sm);
+  cursor:          pointer;
+  transition:      all 0.15s ease;
+  flex-shrink:     0;
 }
 
 .sync-btn:hover {
@@ -219,6 +250,11 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 .sync-btn.active:hover {
   background:   #d9892e;
   border-color: #d9892e;
+}
+
+.sync-btn.ctrl-hint {
+  border-color: #c87628;
+  color:        #c87628;
 }
 
 .sync-icon {

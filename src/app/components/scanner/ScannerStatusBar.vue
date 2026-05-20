@@ -57,9 +57,20 @@ const wsDotClass = computed(() => {
     <div class="status-spacer" />
 
     <div class="log-toggle-notch">
-      <span class="notch-dot" />
-      <span class="notch-dot" />
-      <span class="notch-dot" />
+      <svg class="grip-dots-svg" viewBox="-2 -2 38 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="3" cy="3" r="2"/>
+        <circle cx="9" cy="3" r="2"/>
+        <circle cx="15" cy="3" r="2"/>
+        <circle cx="21" cy="3" r="2"/>
+        <circle cx="27" cy="3" r="2"/>
+        <circle cx="33" cy="3" r="2"/>
+        <circle cx="3" cy="9" r="2"/>
+        <circle cx="9" cy="9" r="2"/>
+        <circle cx="15" cy="9" r="2"/>
+        <circle cx="21" cy="9" r="2"/>
+        <circle cx="27" cy="9" r="2"/>
+        <circle cx="33" cy="9" r="2"/>
+      </svg>
     </div>
 
     <span class="ws-status" :class="wsDotClass">
@@ -107,27 +118,19 @@ const wsDotClass = computed(() => {
 .log-toggle-notch {
   position: absolute;
   left: 50%;
-  top: 0;
-  transform: translateX(-50%);
-  width: 3rem;
-  height: 8px;
-  border-radius: 0 0 8px 8px;
-  background: #333;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2.0rem;
   pointer-events: none;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding-bottom: 2px;
 }
 
-.notch-dot {
-  display: block;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #666;
-  flex-shrink: 0;
+.grip-dots-svg {
+  width: 100%;
+  height: auto;
+  color: #333;
 }
 
 .ws-status {

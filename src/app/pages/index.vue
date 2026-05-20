@@ -21,7 +21,7 @@ useHead({ title: 'Dashboard — Pulse Trader' })
     </div>
 
     <!-- Cards -->
-    <div class="dashboard-grid">
+    <!-- <div class="dashboard-grid">
       <div class="card">
         <div class="card-header">
           <span class="card-title">Header</span>
@@ -91,6 +91,6 @@ useHead({ title: 'Dashboard — Pulse Trader' })
         </div>
         <p class="text-soft">Application module</p>
       </div>
-    </div>    
+    </div>     -->
   </div>
 </template>

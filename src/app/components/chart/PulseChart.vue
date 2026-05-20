@@ -65,7 +65,7 @@ const props = withDefaults(defineProps<{
 
 // ── Crosshair sync ────────────────────────────────────────────────────────────
 const { syncEnabled, syncTime, syncPrice, setSyncTime, setSyncPrice } = useChartSync()
-const { activeTool, selectedDrawingId, selectDrawing, clearSelection, setActiveTool } = useDrawingTools()
+const { activeTool, selectedDrawingId, selectDrawing, clearSelection, setActiveTool, magnetEnabled } = useDrawingTools()
 
 // ── Canvas refs ───────────────────────────────────────────────────────────────
 const wrapEl  = ref<HTMLDivElement | null>(null)
@@ -441,8 +441,8 @@ function drawUI(): void {
   c.clearRect(0, 0, csW, csH)
   if (drawX < 0 || drawX > plW || drawY < 0 || drawY > plH) return
 
-  // Ctrl snap: when horizontal-line tool active + ctrl held, lock drawY to nearest OHLC
-  if (isHovered && ctrlHeld && activeTool.value === 'horizontal-line') {
+  // Ctrl/magnet snap: lock drawY to nearest OHLC of the bar under cursor
+  if (isHovered && (ctrlHeld || magnetEnabled.value)) {
     const snapped = snapOHLC(yToPr(drawY))
     drawY = prToY(snapped)
   }
@@ -517,6 +517,24 @@ function drawUI(): void {
     c.lineWidth   = 1.5
     c.stroke()
     c.restore()
+    // Live info box — updated every mouse-move before second anchor is placed
+    const curBarIdx  = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(drawX))))
+    const curPrice   = yToPr(drawY)
+    const priceDiff  = curPrice - rulerPending.price
+    const pct        = rulerPending.price !== 0 ? (priceDiff / Math.abs(rulerPending.price)) * 100 : 0
+    const pSign      = priceDiff >= 0 ? '+' : ''
+    const rBarDiff   = Math.abs(curBarIdx - rulerPending.barIndex)
+    const rLeft      = Math.min(px1, drawX)
+    const rRight     = Math.max(px1, drawX)
+    const rTop       = Math.min(py1, drawY)
+    const rBottom    = Math.max(py1, drawY)
+    const rInfoLines = [
+      (priceDiff >= 0 ? '+' : '') + (Math.abs(priceDiff) >= 100 ? priceDiff.toFixed(2) : Math.abs(priceDiff) >= 1 ? priceDiff.toFixed(2) : priceDiff.toPrecision(3)),
+      `${pSign}${pct.toFixed(2)}%`,
+      `${rBarDiff} bar${rBarDiff === 1 ? '' : 's'}`,
+    ]
+    rulerLayer.value?.drawInfoBox(c, rLeft, rRight, rTop, rBottom, isUp, rLineClr, rInfoLines, plW, plH)
+    rulerLayer.value?.drawYLabels(c, py1, rulerPending.price, drawY, curPrice, isUp, plW, plH)
   }
 
   // ── Trendline pending preview (dashed line from anchor to cursor) ──────────
@@ -907,7 +925,8 @@ function onMouseMove(e: MouseEvent): void {
   if (syncEnabled.value && props.bars.length) {
     const bi = Math.max(0, Math.min(props.bars.length - 1, Math.round(xToBar(cxX))))
     setSyncTime(props.bars[bi]?.time ?? null)
-    setSyncPrice(yToPr(cxY))
+    const rawPrice = yToPr(cxY)
+    setSyncPrice((ctrlHeld || magnetEnabled.value) ? snapOHLC(rawPrice) : rawPrice)
   }
   // Cursor: grab over anchor, pointer near a drawing line, crosshair otherwise
   if (wrapEl.value && !isDrag) {
@@ -977,6 +996,13 @@ function onMouseUp(e: MouseEvent): void {
 }
 
 function onChartClick(e: MouseEvent): void {
+  // Shift+click: auto-activate the ruler tool and fall through to place first anchor
+  if (e.shiftKey && activeTool.value !== 'ruler' && e.offsetX < plW && e.offsetY < plH && props.bars.length) {
+    clearSelection()
+    activeTool.value = 'ruler'
+    rulerPending = null  // ensure clean state for a fresh ruler
+  }
+
   if (activeTool.value === 'horizontal-line' && e.offsetX < plW && e.offsetY < plH) {
     const rawPrice  = yToPr(e.offsetY)
     const price     = e.ctrlKey ? snapOHLC(rawPrice) : rawPrice

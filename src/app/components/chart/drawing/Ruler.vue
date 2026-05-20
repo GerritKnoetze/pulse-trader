@@ -46,6 +46,84 @@ function fmtDelta(v: number): string {
   return sign + s
 }
 
+function fmtPrice(p: number): string {
+  return p >= 100 ? p.toFixed(2) : p >= 1 ? p.toFixed(2) : p.toPrecision(3)
+}
+
+function drawYLabels(
+  c:      CanvasRenderingContext2D,
+  y1:     number,
+  price1: number,
+  y2:     number,
+  price2: number,
+  isUp:   boolean,
+  plW:    number,
+  plH:    number,
+): void {
+  const bgClr = isUp ? '#067960' : '#c42a35'
+  c.font         = FONT
+  c.textBaseline = 'middle'
+  c.textAlign    = 'center'
+  for (const [py, price] of [[y1, price1], [y2, price2]] as [number, number][]) {
+    if (py < 0 || py > plH) continue
+    const lbl = fmtPrice(price)
+    const lW  = c.measureText(lbl).width + 12
+    const lH  = 16
+    const lX  = plW + 1
+    c.fillStyle = bgClr
+    c.fillRect(lX, py - lH / 2, lW, lH)
+    c.fillStyle = '#fff'
+    c.fillText(lbl, lX + lW / 2, py)
+  }
+  c.textAlign    = 'left'
+  c.textBaseline = 'top'
+}
+
+function drawInfoBox(
+  c:         CanvasRenderingContext2D,
+  left:      number,
+  right:     number,
+  top:       number,
+  bottom:    number,
+  isUp:      boolean,
+  lineClr:   string,
+  lines:     string[],
+  plW:       number,
+  plH:       number,
+  isSelected = false,
+): void {
+  c.font = FONT
+  c.textBaseline = 'top'
+  const lineH = 15
+  const pad   = 7
+  const maxTW = Math.max(...lines.map(l => c.measureText(l).width))
+  const boxW  = maxTW + pad * 2
+  const boxH  = lineH * lines.length + pad
+
+  // Long (isUp): align top of info box with top of ruler rect
+  // Short (!isUp): align bottom of info box with bottom of ruler rect
+  let lx = left - boxW - 5
+  if (lx < 2) lx = right + 5
+  let ly = isUp ? top : bottom - boxH
+  lx = Math.max(2, Math.min(plW - boxW - 2, lx))
+  ly = Math.max(2, Math.min(plH - boxH - 2, ly))
+
+  c.fillStyle = 'rgba(18,18,18,0.88)'
+  roundRect(c, lx, ly, boxW, boxH, 3)
+  c.fill()
+  c.strokeStyle = isSelected ? '#f0c040' : lineClr
+  c.lineWidth   = 1
+  roundRect(c, lx, ly, boxW, boxH, 3)
+  c.stroke()
+
+  c.fillStyle = lineClr
+  c.textAlign = 'right'
+  for (let i = 0; i < lines.length; i++) {
+    c.fillText(lines[i]!, lx + boxW - pad, ly + pad / 2 + i * lineH)
+  }
+  c.textAlign = 'left'
+}
+
 function redraw(
   drawings:   RulerDrawing[],
   selectedId: number | null,
@@ -123,34 +201,7 @@ function redraw(
       `${barDiff} bar${barDiff === 1 ? '' : 's'}`,
     ]
 
-    c.font = FONT
-    c.textBaseline = 'top'
-    const lineH = 15
-    const pad   = 7
-    const maxTW = Math.max(...lines.map(l => c.measureText(l).width))
-    const boxW  = maxTW + pad * 2
-    const boxH  = lineH * lines.length + pad
-
-    // Centre label inside the measurement rect; clamp to plot area
-    let lx = left + (rW - boxW) / 2
-    let ly = top  + (rH - boxH) / 2
-    lx = Math.max(2, Math.min(plW - boxW - 2, lx))
-    ly = Math.max(2, Math.min(plH - boxH - 2, ly))
-
-    c.fillStyle = 'rgba(18,18,18,0.88)'
-    roundRect(c, lx, ly, boxW, boxH, 3)
-    c.fill()
-    c.strokeStyle = isSelected ? '#f0c040' : lineClr
-    c.lineWidth   = 1
-    roundRect(c, lx, ly, boxW, boxH, 3)
-    c.stroke()
-
-    c.fillStyle    = lineClr
-    c.textAlign    = 'right'
-    for (let i = 0; i < lines.length; i++) {
-      c.fillText(lines[i]!, lx + boxW - pad, ly + pad / 2 + i * lineH)
-    }
-    c.textAlign = 'left'
+    drawInfoBox(c, left, right, top, bottom, isUp, lineClr, lines, plW, plH, isSelected)
 
     // ── Anchor dots when selected ────────────────────────────────────────────
     if (isSelected) {
@@ -172,10 +223,13 @@ function redraw(
       c.lineWidth   = 1.5
       c.stroke()
     }
+
+    // ── Y-axis price labels ──────────────────────────────────────────────────
+    drawYLabels(c, y1, d.price1, y2, d.price2, isUp, plW, plH)
   }
 }
 
-defineExpose({ resize, redraw })
+defineExpose({ resize, redraw, drawInfoBox, drawYLabels })
 </script>
 
 <template>

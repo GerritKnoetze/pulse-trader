@@ -14,6 +14,7 @@ export type DrawingToolId =
  */
 const activeTool        = ref<DrawingToolId>(null)
 const selectedDrawingId = ref<number | null>(null)
+const magnetEnabled     = ref(false)
 let   _deleteCallback:  (() => void) | null = null
 
 function clearSelection(): void {
@@ -25,6 +26,7 @@ export function useDrawingTools() {
   return {
     activeTool,
     selectedDrawingId,
+    magnetEnabled,
     /** Toggle: clicking an already-active tool deselects it. Clears any selection. */
     setActiveTool: (id: Exclude<DrawingToolId, null>) => {
       activeTool.value = activeTool.value === id ? null : id
