@@ -10,9 +10,11 @@ const { activeTool, setActiveTool, selectedDrawingId, deleteSelected, magnetEnab
 
 const symbolSearchOpen = ref(false)
 const ctrlActive       = ref(false)
+const shiftActive      = ref(false)
 
 function onGlobalKeydown(e: KeyboardEvent) {
   if (e.key === 'Control') ctrlActive.value = true
+  if (e.key === 'Shift')   shiftActive.value = true
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
     e.preventDefault()
     symbolSearchOpen.value = true
@@ -25,6 +27,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
 
 function onGlobalKeyup(e: KeyboardEvent) {
   if (e.key === 'Control') ctrlActive.value = false
+  if (e.key === 'Shift')   shiftActive.value = false
 }
 
 onMounted(() => {
@@ -139,7 +142,7 @@ onUnmounted(() => {
     </button>
 
     <!-- Ruler -->
-    <button class="tool-btn" :class="{ active: activeTool === 'ruler' }" title="Ruler" @click="setActiveTool('ruler')">
+    <button class="tool-btn" :class="{ active: activeTool === 'ruler', 'ctrl-hint': shiftActive && activeTool !== 'ruler' }" title="Ruler (or hold Shift+click on chart)" @click="setActiveTool('ruler')">
       <svg class="tool-icon tool-icon--ruler" viewBox="0 0 28 14" fill="none">
         <!-- Ruler body -->
         <rect x="0.7" y="0.7" width="26.6" height="12.6" rx="1.3" stroke="currentColor" stroke-width="1.4" />
@@ -252,7 +255,8 @@ onUnmounted(() => {
   border-color: #d9892e;
 }
 
-.sync-btn.ctrl-hint {
+.sync-btn.ctrl-hint,
+.tool-btn.ctrl-hint {
   border-color: #c87628;
   color:        #c87628;
 }

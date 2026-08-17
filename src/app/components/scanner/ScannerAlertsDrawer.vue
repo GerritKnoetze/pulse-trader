@@ -357,13 +357,17 @@ function openChecklist(rec: SetupAlertRecord) {
 /* ── Alert list ── */
 .alerts-scroll {
   flex: 1;
-  overflow-y: scroll;
+  overflow-y: auto;
   padding: 0.4rem 0.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
   min-height: 0;
 }
+.alerts-scroll::-webkit-scrollbar { width: 4px; }
+.alerts-scroll::-webkit-scrollbar-track { background: transparent; }
+.alerts-scroll::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+.alerts-scroll::-webkit-scrollbar-thumb:hover { background: #444; }
 
 .alerts-empty {
   display: flex;
