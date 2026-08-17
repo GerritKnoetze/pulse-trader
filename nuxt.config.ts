@@ -1,11 +1,22 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
+import { resolve } from 'node:path'
 import pkg from './package.json'
 
 export default defineNuxtConfig({
   runtimeConfig: {
+    // Absolute path to the SQLite database, anchored to the project root at
+    // config-load time. The production server (nuxt preview) chdirs into
+    // .output, so process.cwd() at runtime is NOT the project root — the DB
+    // path must be baked here, never derived from runtime cwd.
+    // Override with the DB_PATH env var.
+    dbPath: process.env.DB_PATH || resolve(process.cwd(), 'data', 'pulse-trader.db'),
     public: {
       appVersion: pkg.version,
       appName: pkg.name,
+      // Live feed master switch. Disabled during the data refactor so only the
+      // initial load/scan path runs. Re-enable with LIVE_FEED_ENABLED=true once
+      // the scan data is verified and live trading commences.
+      liveFeedEnabled: process.env.LIVE_FEED_ENABLED === 'true',
     },
   },
 

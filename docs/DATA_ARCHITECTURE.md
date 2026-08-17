@@ -1192,7 +1192,16 @@ contracts to preserve.
    scans. Revisit: decide whether an auto-rescan on SSE reconnect / app resume should be reintroduced
    once live trading starts.
 
-3. **Trading methodology is expanding beyond The Strat.** Pulse Trader's scanner logic was built
+3. **Live feed temporarily disabled (2026-08-17).** While the data layer is being refactored
+   step-by-step, the entire live pipeline is switched off so only the initial load/scan path runs.
+   Controlled by `runtimeConfig.public.liveFeedEnabled` (set `LIVE_FEED_ENABLED=true` to re-enable).
+   Gated in three places: `scanner-engine.ts` constructor (WS tick handler not registered),
+   `scanner-engine.ts` `updateWsSubscriptions` (never subscribes → no on-demand WS connect), and
+   `useScanner.ts` `connectLive` (no EventSource). The grid is populated purely from the scan
+   response; charts still fetch static bars via `/api/scanner/chart-bars`. Revisit: re-enable and
+   validate reconnect gap-repair + tick accuracy before live trading.
+
+4. **Trading methodology is expanding beyond The Strat.** Pulse Trader's scanner logic was built
    around The Strat (CC codes, patterns, setups). The strategy is now a hybrid of The Strat + Ross
    Cameron's momentum-day-trading approach, adapted to be proprietary. Revisit: the scanner's TA /
    setup / quick-filter model will need to grow to cover momentum-day-trading concepts (pre-market

@@ -138,6 +138,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  text-decoration: none;
   transition: color var(--transition-speed) var(--transition-timing);
 }
 
@@ -168,6 +169,20 @@ body {
   font-size: 1.2rem;
   margin: 0;
   font-weight: 500;
+}
+
+.app-title-text {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.app-title-docs-label {
+  font-size: 0.65rem;
+  font-weight: 400;
+  color: var(--color-text-soft);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .main-nav {

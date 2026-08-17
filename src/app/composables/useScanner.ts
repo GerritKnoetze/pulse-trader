@@ -202,6 +202,9 @@ function scheduleScan() {
 // ── SSE live updates ──────────────────────────────────────────────────────────
 
 function connectLive() {
+  // Live feed disabled → no EventSource. The grid reflects scan results only.
+  const { liveFeedEnabled } = useRuntimeConfig().public
+  if (!liveFeedEnabled) return
   if (eventSource) return
   wsStatus.value = 'connecting'
   eventSource = new EventSource('/api/scanner/subscribe')

@@ -87,8 +87,12 @@ class ScannerEngine {
   private lastSortedCandidates: SnapshotTicker[] = []
 
   constructor() {
-    // Wire WS tick handler
-    getWsRelay().onTick('scanner-engine', (tick) => this.onTick(tick as AggregateTick))
+    // Wire WS tick handler — only when the live feed is enabled. With it off,
+    // the engine purely serves the scan/initial-load path (no WS ticks, no
+    // rowCache patch-and-broadcast, no reconnect activity).
+    if (useRuntimeConfig().public.liveFeedEnabled) {
+      getWsRelay().onTick('scanner-engine', (tick) => this.onTick(tick as AggregateTick))
+    }
 
     // Log WS status changes and fan-out to SSE clients so the browser status
     // indicator accurately reflects the server-side WS relay state.
@@ -574,6 +578,9 @@ class ScannerEngine {
   // ── Private: WS subscription management ──────────────────────────────────
 
   private updateWsSubscriptions(top: SnapshotTicker[]): void {
+    // Live feed disabled → never subscribe (and therefore never trigger an
+    // on-demand WS connect). Scans still return rows from L1→L2→L3 only.
+    if (!useRuntimeConfig().public.liveFeedEnabled) return
     const tier1 = top.slice(0, TIER1_SIZE).map(t => t.ticker)
     const tier2 = top.slice(TIER1_SIZE, TIER1_SIZE + TIER2_SIZE).map(t => t.ticker)
     getWsRelay().updateSubscriptions(tier1, tier2)
