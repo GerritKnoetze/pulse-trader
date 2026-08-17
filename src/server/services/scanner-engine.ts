@@ -24,15 +24,13 @@ import { getSnapshotCache } from './snapshot-cache'
 import { getCandleCache } from './candle-cache'
 import { computeTA, computeRVOL, computeFTFC, computeMtfState, computeCcCodes, computePattern, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min, type TodaySnap } from './ta-calculator'
 import { getWsRelay } from './ws-relay'
-import { getOrSyncDailyBars, getOrSyncMinuteBars, getOrSyncFiveMinuteBars, persistMinuteBar, RateLimitError } from './market-data.service'
+import { getOrSyncDailyBars, getOrSyncMinuteBars, getOrSyncFiveMinuteBars, getOrSyncTenSecondBars, persistMinuteBar, persistTenSecondBar, TEN_SEC_BUFFER, RateLimitError } from './market-data.service'
 import { getMetrics } from './metrics'
 import { isMarketSession, etDateString } from '../utils/et-time'
 import { appLog } from './app-log'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const TIER1_SIZE      = 50   // full A+Q subscriptions
-const TIER2_SIZE      = 150  // A-only subscriptions
 const MAX_CONCURRENCY = 10   // parallel bar fetches per scan page
 
 // Period lengths used by the period-elapse freshness check.
@@ -56,9 +54,6 @@ type SseWriter = (data: object) => void
 interface IntradayState {
   '1':  MtfSignal
   '5':  MtfSignal
-  '15': MtfSignal
-  '30': MtfSignal
-  '60': MtfSignal
   'D'?: MtfSignal  // updated on every AM tick
   'W'?: MtfSignal  // updated on every AM tick from daily cache
   'M'?: MtfSignal
@@ -88,10 +83,14 @@ class ScannerEngine {
   // Intraday data from WS (updated every tick)
   private intraday = new Map<string, IntradayState>()
 
+  // In-progress 10-second candle per symbol (ephemeral — derived from the WS
+  // per-second `A` aggregates, never persisted). Finalized buckets are stored in
+  // the CandleCache '10s' entry and broadcast to open charts.
+  private tenSec = new Map<string, BarInput>()
+
   // Last scan metadata
   private lastScanAt: string = ''
   private lastCriteria: ScanCriteria | null = null
-  private lastSortedCandidates: SnapshotTicker[] = []
 
   // symbol → last computed avgVol30 (from TA). Used to pre-filter minRvol in
   // the snapshot filter so enrichment is not wasted on rows that will be
@@ -101,6 +100,10 @@ class ScannerEngine {
   // Symbols with an open chart tab. The data layer keeps these fresh on every
   // new period and pushes the new bars to charts as SSE events (no polling).
   private watchedSymbols = new Set<string>()
+
+  // Tickers of the current visible grid window — the live WS streams A+Q for
+  // these (plus watched symbols). Replaced on every scan.
+  private lastVisibleTickers: string[] = []
 
   // Last bar timestamp broadcast per `${symbol}:${timespan}` — only the newly
   // completed bars (deltas) are pushed to charts.
@@ -188,33 +191,40 @@ class ScannerEngine {
      // Sort by |change%| descending so biggest movers are first
      candidates.sort((a, b) => Math.abs(b.todaysChangePerc) - Math.abs(a.todaysChangePerc))
 
-     this.lastSortedCandidates = candidates
      this.lastCriteria = criteria
 
-     // Pre-populate prevDayClose for tier1+tier2 symbols so onTick can
-     // compute live chg$ / chg% without snapshot data at tick time.
-     for (const t of candidates.slice(0, TIER1_SIZE + TIER2_SIZE)) {
+     // Visible window: top `visible` matches, excluding minRvol-rejected symbols.
+     const window = candidates.slice(0, visible).filter(c => !this.rejectedSymbols.has(c.ticker))
+
+     // Pre-populate prevDayClose for the visible symbols (the ones that will be
+     // streamed) so onTick can compute live chg$ / chg% without snapshot data.
+     for (const t of window) {
        let state = this.intraday.get(t.ticker)
        if (!state) {
-         state = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
+         state = { '1': 'up', '5': 'up' }
          this.intraday.set(t.ticker, state)
        }
        if (t.prevDay.c) state.prevDayClose = t.prevDay.c
      }
-
-     // Visible window: top `visible` matches, excluding minRvol-rejected symbols.
-     const window = candidates.slice(0, visible).filter(c => !this.rejectedSymbols.has(c.ticker))
 
      // Build rows instantly — enriched from the row cache when available,
      // otherwise a minimal snapshot row. No bar fetches on this path.
      const rows: ScannerRow[] = []
      for (const t of window) {
        const row = this.rowCache.get(t.ticker) ?? this.buildMinimalRow(t)
-       if (row) rows.push(row)
+       if (row) {
+         // Refresh today's session daily bar from the fresh snapshot each scan.
+         if (t.day && t.day.o > 0) {
+           row.day = { o: t.day.o, h: t.day.h, l: t.day.l, c: t.day.c }
+         }
+         rows.push(row)
+       }
      }
 
-     // Update WS subscriptions based on full sorted list
-     this.updateWsSubscriptions(candidates.slice(0, TIER1_SIZE + TIER2_SIZE))
+     // Update WS subscriptions to match the visible grid rows (+ open chart
+     // symbols). Symbols that dropped out of the window are unsubscribed.
+     this.lastVisibleTickers = window.map(t => t.ticker)
+     this.updateWsSubscriptions()
 
      // Refresh wsActive on all returned rows to reflect the just-made subscriptions.
      for (const row of rows) row.wsActive = this.isWsActive(row.symbol)
@@ -265,11 +275,15 @@ class ScannerEngine {
   watchSymbol(symbol: string): void {
     this.watchedSymbols.add(symbol)
     void this.refreshSymbolBars(symbol).catch(() => { /* non-critical */ })
+    // Subscribe the symbol on the live relay right away (not just on the next scan).
+    if (this.lastVisibleTickers.length > 0) this.updateWsSubscriptions()
   }
 
   /** Unregister a symbol when its chart tab is closed. */
   unwatchSymbol(symbol: string): void {
     this.watchedSymbols.delete(symbol)
+    // Release its WS channel now if it's no longer in the visible grid window.
+    if (this.lastVisibleTickers.length > 0) this.updateWsSubscriptions()
   }
 
   getWatchedSymbols(): string[] {
@@ -354,6 +368,23 @@ class ScannerEngine {
    * cache/DB) and broadcast only the newly completed bars as SSE events.
    */
   private async refreshSymbolBars(symbol: string): Promise<void> {
+    // 10-second — seed history from REST first (so the 10S chart fills quickly,
+    // not after the heavier minute/5m/daily syncs). Live buckets are broadcast
+    // separately by finalizeTenSecond.
+    try {
+      const { bars: tenBars, seeded } = await getOrSyncTenSecondBars(symbol)
+      const key = `${symbol}:10s`
+      // A fresh seed must broadcast the FULL history — resetting the watermark
+      // would otherwise filter it out because live buckets already advanced it.
+      if (seeded) this.lastSentBar.set(key, 0)
+      const last = this.lastSentBar.get(key) ?? 0
+      const fresh = tenBars.filter(b => b.timestamp > last)
+      if (fresh.length > 0) {
+        this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
+        this.broadcastBars(symbol, '10s', fresh)
+      }
+    } catch { /* non-critical */ }
+
     // 1-minute — the primary driver of chart updates.
     try {
       const minuteBars = await this.getIntradayBars(symbol)
@@ -512,7 +543,7 @@ class ScannerEngine {
       // as the most reliable current price when building todaySnap.
       let intraState = this.intraday.get(ticker.ticker)
       if (!intraState) {
-        intraState = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
+        intraState = { '1': 'up', '5': 'up' }
         this.intraday.set(ticker.ticker, intraState)
       }
       if (ticker.day.o > 0) intraState.todayOpen = ticker.day.o
@@ -574,6 +605,12 @@ class ScannerEngine {
         category: ta.category,
         enrichLevel: rateLimited ? 'error' : minuteBars.length > 0 ? 'full' : 'daily',
         wsActive: this.isWsActive(ticker.ticker),
+        day: {
+          o: ticker.day.o,
+          h: ticker.day.h || Math.max(ticker.day.o, currentPrice),
+          l: ticker.day.l || Math.min(ticker.day.o, currentPrice),
+          c: currentPrice,
+        },
       }
 
       // Score Strat setup on intraday TFs (day trading only — no daily/swing setups)
@@ -623,7 +660,7 @@ class ScannerEngine {
       rvol: 0,
       inForce: false,
       ftfc: false,
-      mtf: { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up', D: 'up', W: 'up', M: 'up', Q: 'up', Y: 'up' },
+      mtf: { '1': 'up', '5': 'up', D: 'up', W: 'up', M: 'up', Q: 'up', Y: 'up' },
       cc: '',
       cc1: '',
       cc2: '',
@@ -632,6 +669,12 @@ class ScannerEngine {
       category: '',
       enrichLevel,
       wsActive: this.isWsActive(ticker.ticker),
+      day: {
+        o: ticker.day.o,
+        h: ticker.day.h || Math.max(ticker.day.o, last),
+        l: ticker.day.l || Math.min(ticker.day.o, last),
+        c: last,
+      },
     }
   }
 
@@ -691,11 +734,14 @@ class ScannerEngine {
     // Update live price/volume state
     let state = this.intraday.get(sym)
     if (!state) {
-      state = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
+      state = { '1': 'up', '5': 'up' }
       this.intraday.set(sym, state)
     }
     state.lastPrice = price
     state.accVolume = tick.av
+
+    // Build 10-second candles from the per-second aggregates (ephemeral).
+    if (tick.ev === 'A') this.accumulateTenSecond(tick)
 
     if (tick.ev === 'AM') {
       // Completed 1-minute bar — persist to CandleCache and SQLite
@@ -712,22 +758,18 @@ class ScannerEngine {
       getCandleCache().appendBar(sym, 'minute', bar)
       try { persistMinuteBar(bar) } catch { /* non-critical */ }
 
-      // Re-derive all intraday directions from the updated 1-min bar set in CandleCache.
-      const minuteBars = getCandleCache().get(sym, 'minute') ?? [bar]
-      const dir1  = bar.close >= bar.open ? 'up' : 'down'
-      const dir5  = intradayDir(aggregateTo5min(minuteBars))
-      const dir15 = intradayDir(aggregateTo15min(minuteBars))
-      const dir30 = intradayDir(aggregateTo30min(minuteBars))
-      const dir60 = intradayDir(aggregateTo60min(minuteBars))
-      state['1']  = dir1 as MtfSignal
-      state['5']  = dir5 as MtfSignal
-      state['15'] = dir15 as MtfSignal
-      state['30'] = dir30 as MtfSignal
-      state['60'] = dir60 as MtfSignal
+      // Update live intraday directions from REAL data only:
+      //  '1' from the completed minute bar; '5' from the fetched 5m series.
+      //  (No 15/30/60 — they are derived timeframes that are no longer shown.)
+      const dir1 = bar.close >= bar.open ? 'up' : 'down'
+      const fiveCache = getCandleCache().get(sym, '5min')
+      state['1'] = dir1 as MtfSignal
+      state['5'] = (fiveCache && fiveCache.length > 0 ? intradayDir(fiveCache) : dir1) as MtfSignal
 
       // Re-derive D/W/M/Q/Y on every completed minute bar so higher-TF chips
       // stay accurate throughout the session (e.g. a gap-up day flips W/M/Q/Y).
       // We use daily bars from the CandleCache + today's synthetic bar (todayOpen→lastClose).
+      const minuteBars = getCandleCache().get(sym, 'minute') ?? [bar]
       const dailyCache = getCandleCache().get(sym, 'day')
       const lastMinBar = minuteBars[minuteBars.length - 1]!
       if (dailyCache && state.todayOpen && state.todayOpen > 0) {
@@ -751,6 +793,7 @@ class ScannerEngine {
     const row = this.rowCache.get(sym)
     if (row) {
       row.last = Math.round(price * 100) / 100
+      row.ts = tick.s || tick.e || Date.now()
       // Recompute change$ and change% from the stored previous-day close
       if (state.prevDayClose) {
         const diff = price - state.prevDayClose
@@ -761,12 +804,16 @@ class ScannerEngine {
       if (state.accVolume && row.avgVol30 > 0) {
         row.rvol = computeRVOL(state.accVolume, row.avgVol30)
       }
+      // Keep today's session daily high/low/close live from the tick stream
+      // (seeded from the snapshot; the open never changes mid-session).
+      if (row.day) {
+        row.day.h = Math.max(row.day.h, price)
+        row.day.l = Math.min(row.day.l, price)
+        row.day.c = price
+      }
       if (tick.ev === 'AM') {
         row.mtf['1']  = state['1']
         row.mtf['5']  = state['5']
-        row.mtf['15'] = state['15']
-        row.mtf['30'] = state['30']
-        row.mtf['60'] = state['60']
         if (state['D']) row.mtf['D'] = state['D']
         if (state['W']) row.mtf['W'] = state['W']
         if (state['M']) row.mtf['M'] = state['M']
@@ -777,6 +824,52 @@ class ScannerEngine {
       }
       this.broadcastUpdate(row)
     }
+  }
+
+  /**
+   * Accumulate a per-second `A` aggregate into the current 10-second bucket.
+   * When the bucket rolls over, the completed bucket is stored in the CandleCache
+   * '10s' buffer and broadcast to open charts (which drive the in-progress 10s
+   * forming candle from the live price themselves).
+   */
+  private accumulateTenSecond(tick: AggregateTick): void {
+    const sym = tick.sym
+    if (!this.watchedSymbols.has(sym) || !tick.s) return
+    const bucketStart = Math.floor(tick.s / 10_000) * 10_000
+    const existing = this.tenSec.get(sym)
+    if (!existing || existing.timestamp < bucketStart) {
+      if (existing) this.finalizeTenSecond(sym, existing)
+      this.tenSec.set(sym, {
+        ticker: sym,
+        timespan: '10s',
+        timestamp: bucketStart,
+        open: tick.o,
+        high: tick.h,
+        low: tick.l,
+        close: tick.c,
+        volume: tick.v,
+      })
+    } else if (existing.timestamp === bucketStart) {
+      existing.high = Math.max(existing.high, tick.h)
+      existing.low = Math.min(existing.low, tick.l)
+      existing.close = tick.c
+      existing.volume += tick.v
+    }
+  }
+
+  private finalizeTenSecond(sym: string, bar: BarInput): void {
+    const cache = getCandleCache().get(sym, '10s') ?? []
+    const last = cache[cache.length - 1]
+    // The REST-seeded history may already include this bucket — replace it.
+    if (last && last.timestamp === bar.timestamp) cache[cache.length - 1] = bar
+    else cache.push(bar)
+    if (cache.length > TEN_SEC_BUFFER) cache.shift()
+    getCandleCache().set(sym, '10s', cache)
+    try { persistTenSecondBar(bar) } catch { /* non-critical */ }
+    // Keep the watermark in sync so the background seed refresh never re-broadcasts
+    // a live bucket that was already pushed.
+    this.lastSentBar.set(`${sym}:10s`, bar.timestamp)
+    this.broadcastBars(sym, '10s', [bar])
   }
 
   private broadcastUpdate(row: ScannerRow): void {
@@ -819,13 +912,15 @@ class ScannerEngine {
 
   // ── Private: WS subscription management ──────────────────────────────────
 
-  private updateWsSubscriptions(top: SnapshotTicker[]): void {
+  private updateWsSubscriptions(): void {
     // Live feed disabled → never subscribe (and therefore never trigger an
     // on-demand WS connect). Scans still return rows from L1→L2→L3 only.
     if (!useRuntimeConfig().public.liveFeedEnabled) return
-    const tier1 = top.slice(0, TIER1_SIZE).map(t => t.ticker)
-    const tier2 = top.slice(TIER1_SIZE, TIER1_SIZE + TIER2_SIZE).map(t => t.ticker)
-    getWsRelay().updateSubscriptions(tier1, tier2)
+    // Subscribe the A stream to exactly the visible grid rows plus any open
+    // chart symbols. The relay diffs against the current set, so symbols that
+    // fell out of the visible window are unsubscribed automatically.
+    const desired = [...new Set([...this.lastVisibleTickers, ...this.watchedSymbols])]
+    getWsRelay().updateSubscriptions(desired)
   }
 }
 

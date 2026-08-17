@@ -64,6 +64,13 @@ export interface ScannerRow {
   enrichLevel?: 'none' | 'daily' | 'full' | 'error'
   /** True when the symbol is currently streamed by the live WebSocket relay. */
   wsActive?: boolean
+  /** Unix-ms timestamp of the last WS tick that updated this row (feed-consistent
+   *  time — used by charts to align the live forming candle even on delayed feeds). */
+  ts?: number
+  /** Today's session daily bar (open/high/low/close) — from the market snapshot,
+   *  with high/low/close kept live from the WS tick stream. Powers the D panel's
+   *  today candle without deriving it from the 1-minute series. */
+  day?: { o: number; h: number; l: number; c: number }
 }
 
 export type SortDirection = 'asc' | 'desc' | null

@@ -30,9 +30,9 @@ import { useGridFilters } from '~/composables/useGridFilters'
 import type { ScannerRow } from '~/types/scanner'
 import type { ColDef } from '~/composables/useGridColumns'
 
-const MTF_TFS = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y'] as const
+const MTF_TFS = ['1', '5', 'D'] as const
 type MtfTf = typeof MTF_TFS[number]
-const MTF_VISIBLE = new Set<MtfTf>(['1', '5', '60', 'D', 'W'])
+const MTF_VISIBLE = new Set<MtfTf>(['1', '5', 'D'])
 
 const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor, isScanning, runScan, lastScan, total } = useScanner()
 const { openTab } = useChartTabs()

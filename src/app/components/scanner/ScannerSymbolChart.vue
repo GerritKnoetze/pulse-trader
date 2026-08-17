@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, shallowRef, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, shallowRef, watch, onMounted, onUnmounted } from 'vue'
 import type { ShallowRef } from 'vue'
 import PulseChartPanel from '~/components/chart/PulseChartPanel.vue'
 import ChartToolbar from '~/components/chart/ChartToolbar.vue'
 import type { OHLCBar, BarMarker } from '~/components/chart/PulseChart.vue'
 import { subscribeBars, type BarsEvent } from '~/composables/useScanner'
+import { useScanner } from '~/composables/useScanner'
 import { useChartTabs } from '~/composables/useChartTabs'
 import LoadingOverlay from '~/components/common/LoadingOverlay.vue'
 
@@ -13,7 +14,13 @@ const props = defineProps<{
   basePrice: number
 }>()
 
+const { rows } = useScanner()
 const { setTabLoading } = useChartTabs()
+
+// The scanner row for this symbol — `last` is the live WS price and `ts` is the
+// tick's feed-consistent timestamp (used to align the forming candle even when
+// the feed is delayed relative to the local clock).
+const currentRow = computed(() => rows.value.find(r => r.symbol === props.symbol))
 
 // ── Panel layout ──────────────────────────────────────────────────────────────
 interface Panel {
@@ -143,6 +150,15 @@ function todayEtSec(tsSec: number): number {
   return Math.floor(Date.UTC(et.getUTCFullYear(), et.getUTCMonth(), et.getUTCDate()) / 1000) - offset
 }
 
+/** UTC seconds of the current aligned period start for an intraday timeframe. */
+function periodStartSec(key: Panel['key'], tsSec: number): number {
+  const ms = tsSec * 1000
+  if (key === '10s') return Math.floor(ms / 10_000) * 10_000 / 1000
+  if (key === '1')   return Math.floor(ms / 60_000) * 60_000 / 1000
+  if (key === '5')   return Math.floor(ms / 300_000) * 300_000 / 1000
+  return 0
+}
+
 // ── Strat bar-type markers ────────────────────────────────────────────────────────
 function computeMarkers(data: OHLCBar[]): BarMarker[] {
   const out: BarMarker[] = []
@@ -176,46 +192,15 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
   return out
 }
 
-// ── Synthesise today's partial daily bar from intraday (1-min) data ───────────
-// The D-bar DB only contains closed sessions. During a live trading session
-// today's bar doesn't exist yet, so the daily chart's last close (yesterday)
-// differs from the intraday charts. This builds the missing bar.
-function buildTodayBarFrom(minutes: OHLCBar[], todaySec: number): OHLCBar | null {
-  const today = minutes.filter(b => b.time >= todaySec)
-  if (today.length === 0) return null
-  return {
-    time:  todaySec,
-    open:  today[0]!.open,
-    high:  Math.max(...today.map(b => b.high)),
-    low:   Math.min(...today.map(b => b.low)),
-    close: today[today.length - 1]!.close,
-  }
-}
-
-// ── Intraday aggregation (mirrors the server's aggregateMinuteBars) ───────────
-// Groups 1-minute bars into N-minute candles using epoch-aligned bucket keys.
-// The 5M panel is derived from the 1M series so it always tracks the live 1M
-// updates (the server's real 5M series only advances on the provider's cadence).
-function aggregateMinutes(minutes: OHLCBar[], intervalMin: number): OHLCBar[] {
-  const bucketSec = intervalMin * 60
-  const buckets = new Map<number, OHLCBar[]>()
-  for (const b of minutes) {
-    const key = Math.floor(b.time / bucketSec) * bucketSec
-    const arr = buckets.get(key) ?? []
-    arr.push(b)
-    buckets.set(key, arr)
-  }
-  const result: OHLCBar[] = []
-  for (const [key, group] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
-    result.push({
-      time:  key,
-      open:  group[0]!.open,
-      high:  Math.max(...group.map(b => b.high)),
-      low:   Math.min(...group.map(b => b.low)),
-      close: group[group.length - 1]!.close,
-    })
-  }
-  return result
+// ── Today's partial daily bar from the row's session `day` data ───────────────
+// The D-bar DB only contains closed sessions. Today's bar comes from the row's
+// `day {o,h,l,c}` (seeded from the market snapshot, kept live from WS ticks) —
+// no derivation from the 1-minute series.
+function todayBarFromRow(): OHLCBar | null {
+  const day = currentRow.value?.day
+  if (!day || day.o <= 0) return null
+  const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
+  return { time: todaySec, open: day.o, high: day.h, low: day.l, close: day.c }
 }
 
 // ── Build chart data ──────────────────────────────────────────────────────────
@@ -232,12 +217,12 @@ async function buildCharts(): Promise<void> {
   const hasReal = Object.keys(realBars).length > 0
   dataSource.value = hasReal ? 'real' : 'demo'
 
-  // Patch today's partial D bar from intraday so D panel shows today
+  // Patch today's partial D bar from the row's session `day` data so D shows today
   if (hasReal && realBars['D']?.length) {
     const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
     const lastDTs  = realBars['D'][realBars['D'].length - 1]!.time
     if (lastDTs < todaySec) {
-      const todayBar = buildTodayBarFrom(realBars['1'] ?? realBars['5'] ?? [], todaySec)
+      const todayBar = todayBarFromRow()
       if (todayBar) realBars['D'] = [...realBars['D'], todayBar]
     }
   }
@@ -250,9 +235,11 @@ async function buildCharts(): Promise<void> {
 
   // Populate per-panel data BEFORE setting loading = false so charts mount with data
   PANELS.forEach((panel, idx) => {
-    if (panel.key === '5') return // 5M is derived from the 1M series below
     let data: OHLCBar[]
-    if (hasReal && realBars[panel.key]?.length) {
+    if (panel.key === '10s') {
+      // 10s is live WS-derived — show the buffered bars or an empty panel (no demo).
+      data = (hasReal && realBars['10s']?.length) ? realBars['10s']! : []
+    } else if (hasReal && realBars[panel.key]?.length) {
       data = realBars[panel.key]!
     } else {
       const rng   = seededRng(symbolSeed(props.symbol, idx * 7919))
@@ -263,9 +250,6 @@ async function buildCharts(): Promise<void> {
     panelBars[idx]!.value    = data
     panelMarkers[idx]!.value = computeMarkers(data)
   })
-
-  // 5M panel — derived from the 1M series so it stays current with live updates.
-  refreshDerived()
 
   setTabLoading(props.symbol, false)
   loading.value = false
@@ -292,9 +276,16 @@ function flushPendingBars(): void {
 /** Append newer bars / replace the current candle in one panel. Returns true when changed. */
 function applyToPanel(key: Panel['key'], bars: ApiBar[]): boolean {
   const idx = panelIndex(key)
-  if (idx === -1) return false
+  if (idx === -1 || bars.length === 0) return false
   const cur = panelBars[idx]!.value
-  if (!cur.length) return false
+  if (!cur.length || bars.length > cur.length) {
+    // First data, or a full-series backfill (e.g. the 10s history seed arriving
+    // after a few live buckets) — adopt the incoming series wholesale.
+    const adopted = bars.map(b => ({ time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c }))
+    panelBars[idx]!.value = adopted
+    panelMarkers[idx]!.value = computeMarkers(adopted)
+    return true
+  }
   let out = [...cur]
   let changed = false
   for (const b of bars) {
@@ -313,38 +304,6 @@ function applyToPanel(key: Panel['key'], bars: ApiBar[]): boolean {
     panelMarkers[idx]!.value = computeMarkers(out)
   }
   return changed
-}
-
-/** Rebuild the 5M panel from the 1-min series and refresh the D today bar. */
-function refreshDerived(): void {
-  const fiveIdx = panelIndex('5')
-  const oneIdx  = panelIndex('1')
-  if (fiveIdx === -1 || oneIdx === -1) return
-  const five = aggregateMinutes(panelBars[oneIdx]!.value, 5)
-  panelBars[fiveIdx]!.value = five
-  panelMarkers[fiveIdx]!.value = computeMarkers(five)
-  refreshTodayBar()
-}
-
-/** Rebuild the D panel's today bar from the current 1-min series. */
-function refreshTodayBar(): void {
-  const idxD = panelIndex('D')
-  const minIdx = panelIndex('1')
-  if (idxD === -1 || minIdx === -1) return
-  const dArr = panelBars[idxD]!.value
-  if (!dArr.length) return
-  const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
-  const todayBar = buildTodayBarFrom(panelBars[minIdx]!.value, todaySec)
-  if (!todayBar) return
-  const last = dArr[dArr.length - 1]!
-  if (last.time < todaySec) {
-    panelBars[idxD]!.value = [...dArr, todayBar]
-  } else if (last.time === todaySec) {
-    panelBars[idxD]!.value = [...dArr.slice(0, -1), todayBar]
-  } else {
-    return
-  }
-  panelMarkers[idxD]!.value = computeMarkers(panelBars[idxD]!.value)
 }
 
 /** Merge newly-closed daily bars into the D panel history, then re-add today. */
@@ -366,7 +325,8 @@ function applyDayHistory(bars: ApiBar[]): void {
   }
   if (changed) {
     panelBars[idxD]!.value = merged
-    refreshTodayBar()
+    const todayBar = todayBarFromRow()
+    if (todayBar) panelBars[idxD]!.value = [...merged, todayBar]
   }
 }
 
@@ -381,13 +341,68 @@ function applyBarsUpdate(msg: BarsEvent): void {
 
 function applyBarsNow(msg: BarsEvent): void {
   if (msg.timespan === 'minute') {
-    // The 5M panel is derived from the 1M series, so a 1M update flows through
-    // to 5M (and D's today bar) automatically.
-    if (applyToPanel('1', msg.bars)) refreshDerived()
+    applyToPanel('1', msg.bars)
+  } else if (msg.timespan === '5min') {
+    applyToPanel('5', msg.bars)
+  } else if (msg.timespan === '10s') {
+    applyToPanel('10s', msg.bars)
   } else if (msg.timespan === 'day') {
     applyDayHistory(msg.bars)
   }
 }
+
+// ── Live forming-candle updates (WS ticks) ────────────────────────────────────
+// The live price patches the current (forming) candle's H/L/C — completed
+// candles are never created here (history events handle that). When the period
+// rolls over a fresh forming candle is appended for the tick-driven panels
+// (1M, 5M, 10s). The D today bar is rebuilt from the row's session `day` data.
+watch(currentRow, (newRow) => {
+  if (!newRow || loading.value) return
+  const livePrice = newRow.last
+  if (!livePrice) return
+
+  const tickSec = newRow.ts ? Math.floor(newRow.ts / 1000) : Math.floor(Date.now() / 1000)
+  const todaySec = todayEtSec(tickSec)
+
+  PANELS.forEach((panel, idx) => {
+    const arr = panelBars[idx]!.value
+
+    // D panel — today's candle comes from the row's session day {o,h,l,c}.
+    if (panel.key === 'D') {
+      const day = newRow.day
+      if (day && day.o > 0) {
+        const todayBar = { time: todaySec, open: day.o, high: day.h, low: day.l, close: livePrice }
+        if (!arr.length) {
+          panelBars[idx]!.value = [todayBar]
+        } else {
+          const lb = arr[arr.length - 1]!
+          if (lb.time < todaySec) panelBars[idx]!.value = [...arr, todayBar]
+          else if (lb.time === todaySec) panelBars[idx]!.value = [...arr.slice(0, -1), todayBar]
+        }
+      }
+      return
+    }
+
+    if (!arr.length) return
+    const lb = arr[arr.length - 1]!
+
+    let rolloverTime: number | null = null
+    if (panel.key === '5')  rolloverTime = periodStartSec('5', tickSec)
+    else if (panel.key === '1')  rolloverTime = periodStartSec('1', tickSec)
+    else if (panel.key === '10s') rolloverTime = periodStartSec('10s', tickSec)
+
+    if (rolloverTime !== null && rolloverTime !== 0 && lb.time < rolloverTime) {
+      // Last bar is a completed candle — start a fresh forming candle for the
+      // current period (only the tick-driven panels).
+      if (panel.key === '1' || panel.key === '5' || panel.key === '10s') {
+        panelBars[idx]!.value = [...arr, { time: rolloverTime, open: livePrice, high: livePrice, low: livePrice, close: livePrice }]
+      }
+    } else {
+      // Last bar is the current forming candle — patch H/L/C from the live price.
+      panelBars[idx]!.value = [...arr.slice(0, -1), { time: lb.time, open: lb.open, high: Math.max(lb.high, livePrice), low: Math.min(lb.low, livePrice), close: livePrice }]
+    }
+  })
+}, { deep: false })
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 let unsubscribeBars: (() => void) | null = null

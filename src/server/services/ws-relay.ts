@@ -2,7 +2,7 @@
  * WS Relay — manages a single persistent WebSocket connection to massive.com.
  *
  * - Authenticates with API key on connect
- * - Manages per-symbol subscriptions (A = per-second aggregate, Q = quote)
+ * - Manages per-symbol subscriptions (A = per-second aggregate)
  * - Exponential backoff reconnect (1 s → 30 s, max 10 attempts)
  * - 30-second keep-alive ping
  * - Emits 'tick' events to registered handlers
@@ -166,48 +166,10 @@ class WsRelay {
 
   // ── Subscription management ───────────────────────────────────────────────
 
-  /**
-   * Subscribe to aggregate (A) and optionally quote (Q) streams for symbols.
-   * @param symbols  ticker symbols
-   * @param withQuotes  also subscribe to Q (quote) stream — use for tier 1 only
-   */
-  subscribe(symbols: string[], withQuotes = false): void {
-    const params: string[] = []
-    for (const sym of symbols) {
-      params.push(`A.${sym}`)
-      if (withQuotes) params.push(`Q.${sym}`)
-      this.subscriptions.add(`A.${sym}`)
-      if (withQuotes) this.subscriptions.add(`Q.${sym}`)
-    }
-    if (params.length > 0) {
-      if (this.status === 'connected') {
-        this.sendSubscribe(params)
-      } else {
-        // Connect on-demand — the first scan (and re-scans after a drop) drive
-        // connection establishment instead of app boot.
-        this.connect()
-      }
-    }
-  }
-
-  unsubscribe(symbols: string[]): void {
-    const params: string[] = []
-    for (const sym of symbols) {
-      for (const prefix of ['A', 'Q']) {
-        const key = `${prefix}.${sym}`
-        if (this.subscriptions.delete(key)) params.push(key)
-      }
-    }
-    if (params.length > 0 && this.status === 'connected') {
-      this.ws?.send(JSON.stringify({ action: 'unsubscribe', params: params.join(',') }))
-    }
-  }
-
-  /** Replace subscriptions: unsubscribe removed, subscribe added */
-  updateSubscriptions(tier1: string[], tier2: string[]): void {
+  /** Replace subscriptions to mirror a target set of tickers (A stream only). */
+  updateSubscriptions(tickers: string[]): void {
     const desired = new Set<string>()
-    for (const s of tier1) { desired.add(`A.${s}`); desired.add(`Q.${s}`) }
-    for (const s of tier2) { desired.add(`A.${s}`) }
+    for (const s of tickers) desired.add(`A.${s}`)
 
     const toRemove = [...this.subscriptions].filter(s => !desired.has(s))
     const toAdd    = [...desired].filter(s => !this.subscriptions.has(s))

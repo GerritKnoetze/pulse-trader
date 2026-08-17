@@ -4,6 +4,7 @@ import { MarketDataRepository } from '../database/repositories/market-data-repos
 import type { BarInput } from '../database/repositories/market-data-repository';
 import { decryptJsonFields } from '../utils/encryption';
 import { getMetrics } from './metrics';
+import { getCandleCache } from './candle-cache';
 import { daysAgoEt, todayEt, yesterdayEt } from '../utils/et-time';
 
 // Hard ceiling for any single upstream API call — a hung Massive.com request
@@ -392,6 +393,13 @@ const DAILY_LOOKBACK_CALENDAR_DAYS = 600;
 // Rolling window for 1-minute bars: 5 trading days ≈ 7 calendar days
 const MINUTE_WINDOW_CALENDAR_DAYS = 7;
 
+// 10-second bars: look back ~70 minutes on a cold fetch (≈420 bars — enough to
+// seed a 200 EMA with context) and prune SQLite rows older than ~2 hours.
+const TEN_SEC_LOOKBACK_MS = 70 * 60_000;
+const TEN_SEC_PRUNE_MS    = 2 * 60 * 60_000;
+/** Maximum 10s bars kept per symbol in the in-memory buffer (~75 min). */
+export const TEN_SEC_BUFFER = 450;
+
 /**
  * Three-layer daily bar fetch:
  *   L2 → SQLite (permanent store, incremental updates to yesterday)
@@ -565,14 +573,67 @@ export function persistMinuteBar(bar: BarInput): void {
 }
 
 /**
- * 10-second bars — PLACEHOLDER until the live WS feed is re-enabled.
- *
- * Per design, the 10s timeframe is DERIVED from the WebSocket tick stream
- * (per-second `A` aggregates / `T` trades aggregated into 10-second buckets),
- * NOT fetched from the REST API. While the live feed is disabled there is no
- * source for 10s bars, so this returns an empty series and the panel stays
- * empty. Once live is enabled, derive 10s buckets here from tick data.
+ * Persist a single completed 10-second bar (called from the WS 10s bucket
+ * finalizer). Bounded by the short rolling prune in getOrSyncTenSecondBars.
  */
-export async function getTenSecondBars(_ticker: string): Promise<BarInput[]> {
-  return [];
+export function persistTenSecondBar(bar: BarInput): void {
+  const repo = new MarketDataRepository();
+  repo.upsertBars([bar], 'IGNORE');
+}
+
+/**
+ * 10-second bars — three-layer fetch like the other timeframes:
+ *   L1 → CandleCache in-memory buffer (kept fresh by live WS accumulation)
+ *   L2 → SQLite (10s rows for watched symbols, pruned to a ~2 h rolling window)
+ *   L3 → Massive.com API (last ~70 minutes of 10-second aggregates on a cold fetch)
+ *
+ * The buffer is only served from cache once it actually holds HISTORY (a few
+ * live buckets are not enough — they'd mask the REST seed and leave the chart
+ * with 1–2 candles). An empty/unsupported REST response is retried at most once
+ * every 5 minutes per symbol.
+ */
+const MIN_TEN_SEC_HISTORY = 120  // 20 min of buckets — enough to consider it seeded
+const lastTenSecSeedAt = new Map<string, number>()
+
+export interface TenSecondResult { bars: BarInput[]; seeded: boolean }
+
+export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondResult> {
+  const repo = new MarketDataRepository();
+  const now = Date.now();
+  const fromMs = now - TEN_SEC_LOOKBACK_MS;
+
+  // L1: in-memory buffer — only serve when it holds real history.
+  const cached = getCandleCache().get(ticker, '10s');
+  if (cached && cached.length >= MIN_TEN_SEC_HISTORY) {
+    return { bars: cached, seeded: false };
+  }
+
+  // L2: SQLite rolling window.
+  const fromDb = repo.getBars(ticker, '10s', fromMs, now).map(mapRowToBar);
+  if (fromDb.length >= MIN_TEN_SEC_HISTORY) {
+    repo.pruneOlderThan(ticker, '10s', now - TEN_SEC_PRUNE_MS);
+    getCandleCache().set(ticker, '10s', fromDb);
+    return { bars: fromDb, seeded: true };
+  }
+
+  // L3: REST — with a cooldown so a temporarily-empty/unsupported response
+  // isn't retried on every minute refresh.
+  const lastAttempt = lastTenSecSeedAt.get(ticker) ?? 0;
+  if (now - lastAttempt < 5 * 60_000) {
+    return { bars: (cached && cached.length > 0) ? cached : fromDb, seeded: false };
+  }
+  lastTenSecSeedAt.set(ticker, now);
+
+  try {
+    const bars = await fetchAggregates(ticker, 10, 'second', String(fromMs), String(now));
+    if (bars.length > 0) {
+      repo.upsertBars(bars);
+      repo.pruneOlderThan(ticker, '10s', now - TEN_SEC_PRUNE_MS);
+      const bounded = bars.slice(-TEN_SEC_BUFFER);
+      getCandleCache().set(ticker, '10s', bounded);
+      return { bars: bounded, seeded: true };
+    }
+  } catch { /* non-critical — live accumulation builds the series */ }
+
+  return { bars: (cached && cached.length > 0) ? cached : fromDb, seeded: false };
 }

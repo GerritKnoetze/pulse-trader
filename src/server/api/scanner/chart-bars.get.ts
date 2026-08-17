@@ -22,7 +22,6 @@ import {
   getOrSyncDailyBars,
   getOrSyncMinuteBars,
   getOrSyncFiveMinuteBars,
-  getTenSecondBars,
   readCachedBars,
 } from '../../services/market-data.service'
 import {
@@ -82,16 +81,15 @@ export default defineEventHandler(async (event) => {
   const ticker = symbol.toUpperCase()
   const now = Date.now()
 
-  // ── Daily (and derived W/M) ───────────────────────────────────────────────
-  // Closed daily candles never change; today's session bar is built client-side
-  // from intraday, so the daily series is never force-refreshed here.
-  const dailyBars = await loadSeries(ticker, 'day', now - DAY_LOOKBACK_MS, now, () => getOrSyncDailyBars(ticker))
+  // ── Daily (and derived W/M) + 1-min (and derived 60/30) — in parallel so a
+  //  cold-cache fetch isn't serialized (and doesn't stall during a grid load). ──
+  const [dailyBars, minuteBars] = await Promise.all([
+    loadSeries(ticker, 'day', now - DAY_LOOKBACK_MS, now, () => getOrSyncDailyBars(ticker)),
+    loadSeries(ticker, 'minute', now - WINDOW_LOOKBACK_MS, now, () => getOrSyncMinuteBars(ticker)),
+  ])
   const daily   = toChartBars(dailyBars)
   const weekly  = toChartBars(aggregateToWeekly(dailyBars))
   const monthly = toChartBars(aggregateToMonthly(dailyBars))
-
-  // ── 1-min (and derived 60/30) ─────────────────────────────────────────────
-  const minuteBars = await loadSeries(ticker, 'minute', now - WINDOW_LOOKBACK_MS, now, () => getOrSyncMinuteBars(ticker))
   const min1  = toChartBars(minuteBars)
   const min60 = toChartBars(aggregateTo60min(minuteBars))
   const min30 = toChartBars(aggregateTo30min(minuteBars))
@@ -117,9 +115,11 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  // ── 10-second bars (ephemeral — WS-derived once live feed is enabled) ─────
+  // ── 10-second bars ──────────────────────────────────────────────────────────
+  // Read the in-memory buffer INSTANTLY (never block the chart open on the 10s
+  // REST seed — the engine seeds history in the background and pushes it via SSE).
   let sec10: ChartBar[] = []
-  try { sec10 = toChartBars(await getTenSecondBars(ticker)) } catch { /* empty */ }
+  try { sec10 = toChartBars(getCandleCache().get(ticker, '10s') ?? []) } catch { /* empty */ }
 
   return {
     symbol: ticker,

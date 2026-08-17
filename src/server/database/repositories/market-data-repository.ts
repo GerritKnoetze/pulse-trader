@@ -44,10 +44,10 @@ export class MarketDataRepository extends BaseRepository {
    * Uses INSERT OR REPLACE for efficiency.
    */
   upsertBars(bars: BarInput[], onConflict: 'REPLACE' | 'IGNORE' = 'REPLACE'): number {
-    // Persistence invariant: daily, 1-minute and 5-minute bars are stored in
-    // SQLite. Everything else (10s, other derived timeframes) is in-memory /
-    // ephemeral only.
-    const persistable = bars.filter(b => b.timespan === 'day' || b.timespan === 'minute' || b.timespan === '5min');
+    // Persistence invariant: daily, 1-minute, 5-minute and 10-second bars are
+    // stored in SQLite. 10s rows are pruned aggressively (short rolling window).
+    // Everything else (other derived timeframes) is in-memory / ephemeral only.
+    const persistable = bars.filter(b => b.timespan === 'day' || b.timespan === 'minute' || b.timespan === '5min' || b.timespan === '10s');
     if (persistable.length === 0) return 0;
 
     getMetrics().increment('sqliteWrites', persistable.length);
