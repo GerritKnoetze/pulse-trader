@@ -68,6 +68,15 @@ class WsRelay {
   // ── Connection lifecycle ─────────────────────────────────────────────────
 
   connect(): void {
+    // If a previous attempt ended in 'error' (e.g. auth_failed) the underlying
+    // socket may still report OPEN — tear it down so a retry performs a full
+    // reconnect + re-auth instead of being silently swallowed by the guard below.
+    if (this.status === 'error' && this.ws) {
+      this.stopPing()
+      this.ws.onclose = null
+      try { this.ws.close() } catch { /* ignore */ }
+      this.ws = null
+    }
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
     this.stopping = false
     this.setStatus('connecting')
@@ -170,8 +179,14 @@ class WsRelay {
       this.subscriptions.add(`A.${sym}`)
       if (withQuotes) this.subscriptions.add(`Q.${sym}`)
     }
-    if (params.length > 0 && this.status === 'connected') {
-      this.sendSubscribe(params)
+    if (params.length > 0) {
+      if (this.status === 'connected') {
+        this.sendSubscribe(params)
+      } else {
+        // Connect on-demand — the first scan (and re-scans after a drop) drive
+        // connection establishment instead of app boot.
+        this.connect()
+      }
     }
   }
 
@@ -207,6 +222,9 @@ class WsRelay {
       toAdd.forEach(s => this.subscriptions.add(s))
       if (this.status === 'connected') {
         this.sendSubscribe(toAdd)
+      } else {
+        // Connect on-demand so live data flows from the first scan onward.
+        this.connect()
       }
     }
   }

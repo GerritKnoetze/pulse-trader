@@ -9,7 +9,7 @@ import ScannerLogConsole from '~/components/scanner/ScannerLogConsole.vue'
 import ScannerSetupsPanel from '~/components/scanner/ScannerSetupsPanel.vue'
 import ScannerAlertsDrawer from '~/components/scanner/ScannerAlertsDrawer.vue'
 
-const { clearFilters, initScanner, runScan, connectLive, disconnectLive } = useScanner()
+const { clearFilters, initScanner, connectLive, disconnectLive } = useScanner()
 const { initColumns, resetColumns } = useGridColumns()
 const { initFilters, resetFilters, closeFilterDropdown } = useGridFilters()
 const { initLayouts } = useGridLayouts()
@@ -30,7 +30,7 @@ function handleReset() {
 
 function onDocClick() { closeFilterDropdown() }
 
-onMounted(async () => {
+onMounted(() => {
   document.addEventListener('click', onDocClick)
   initScanner()
   initColumns()
@@ -38,8 +38,8 @@ onMounted(async () => {
   initLayouts()
   initPresets()
   connectLive()
-  // Auto-run initial scan
-  await runScan(false)
+  // NOTE: no data is loaded on boot by design — the operator runs the initial
+  // scans manually (toolbar refresh / criteria Scan button / empty-state CTA).
 })
 
 onUnmounted(() => {

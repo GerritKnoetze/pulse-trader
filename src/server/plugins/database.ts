@@ -7,10 +7,11 @@ export default defineNitroPlugin(async (nitroApp) => {
   getConnectionManager();
 
   // Initialize scanner services (singletons created on first access)
-  // Attempt to connect WS relay; it will retry automatically if settings aren't configured yet
+  // NOTE: the WS relay is deliberately NOT connected here — the app boots with
+  // zero upstream data activity. connect() happens on-demand from the first
+  // scan (ws-relay updateSubscriptions/subscribe).
   try {
     getScannerEngine(); // registers WS tick handler
-    getWsRelay().connect();
   } catch {
     // Settings not configured yet — WS will connect when scanner is first used
   }

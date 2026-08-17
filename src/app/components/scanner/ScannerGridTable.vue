@@ -30,7 +30,7 @@ const MTF_TFS = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y'] as const
 type MtfTf = typeof MTF_TFS[number]
 const MTF_VISIBLE = new Set<MtfTf>(['1', '5', '60', 'D', 'W'])
 
-const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor, isScanning } = useScanner()
+const { sortKey, sortDir, setSortBy, loadMore, isLoadingMore, nextCursor, isScanning, runScan, lastScan, total } = useScanner()
 const { openTab } = useChartTabs()
 
 // ── Setup modal ─────────────────────────────────────────────
@@ -180,6 +180,27 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
         </tr>
       </thead>
       <tbody>
+        <tr v-if="localFilteredRows.length === 0">
+          <td :colspan="orderedColumns.length" class="empty-state">
+            <div class="empty-state-inner">
+              <template v-if="lastScan">
+                <p class="empty-title">No matching symbols</p>
+                <p class="empty-sub">
+                  The last scan found no rows{{ total > 0 ? ` (${total} before grid filters)` : '' }}.
+                  Adjust your criteria or filters and scan again.
+                </p>
+              </template>
+              <template v-else>
+                <p class="empty-title">No data loaded</p>
+                <p class="empty-sub">Run an initial scan to pull the market snapshot and build your watchlist.</p>
+              </template>
+              <button class="empty-scan-btn" :disabled="isScanning" @click="runScan(false)">
+                <span v-if="isScanning" class="empty-spinner" />
+                {{ isScanning ? 'Scanning…' : lastScan ? 'Rescan' : 'Run Initial Scan' }}
+              </button>
+            </div>
+          </td>
+        </tr>
         <tr
           v-for="row in localFilteredRows"
           :key="row.id"
@@ -749,4 +770,61 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 .setup-modal-close-icon { width: 1rem; height: 1rem; }
 
 /* ── Loading state — handled by LoadingOverlay component ── */
+
+/* ── Empty state ───────────────────────────────────────────── */
+.empty-state {
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+.empty-state-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.empty-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.empty-sub {
+  font-size: 0.8rem;
+  color: var(--color-text-soft);
+  margin: 0 0 0.5rem;
+}
+
+.empty-scan-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.4rem 1.1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: #c87628;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.empty-scan-btn:hover:not(:disabled) { background: #d98a3a; }
+.empty-scan-btn:disabled { opacity: 0.5; cursor: default; }
+
+.empty-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>

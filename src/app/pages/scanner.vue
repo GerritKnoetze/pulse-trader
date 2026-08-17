@@ -17,9 +17,12 @@ const { activeTab, tabs } = useChartTabs()
       <!-- Scan view — always mounted so SSE and row cache are never torn down -->
       <ScannerGrid v-show="activeTab === 'scan'" class="scanner-view-panel" />
 
-      <!-- Symbol chart views — one per open tab, hidden when not active -->
+      <!-- Symbol chart views — one per open tab, hidden when not active.
+           Lazy-loaded: the heavy chart tree (PulseChart, drawing layers, toolbar)
+           is only fetched once a symbol tab is opened, so the scan view itself
+           loads instantly without pulling the chart module graph. -->
       <template v-for="tab in tabs" :key="tab.symbol">
-        <ScannerSymbolChart
+        <LazyScannerSymbolChart
           v-show="activeTab === tab.symbol"
           class="scanner-view-panel"
           :symbol="tab.symbol"

@@ -1170,3 +1170,32 @@ be off by one. Stored daily timestamps are `04:00 UTC` (ET-midnight), confirming
   missing sync-state model (A). A unified sync-state + ingestion engine is the foundation for both.
 - **Doc contract:** this document is the reference for the rebuild. Update it in lock-step with any
   code change so it never drifts again.
+
+---
+
+## Appendix — Post-refactor revisit notes (2026-08-17)
+
+Captured during the data-layer analysis that kicked off the refactor. These items may **no longer be
+relevant** once the refactor is complete — treat them as a checklist to revisit at the end, not as
+contracts to preserve.
+
+1. **Live DB is on the DELAYED feed (verified).** `Settings.data-broker-details.wsUrl` =
+   `wss://delayed.massive.com` (15-min delay). The user confirmed access to all endpoints; the plan is
+   to run development on delayed data and switch to real-time (`wss://socket.massive.com`) once live
+   trading commences. Revisit: after going live, confirm the saved wsUrl + the defaults in the seed
+   migration, `snapshot-cache.ts`, and `ws-relay.ts` are all aligned on the real-time endpoint, and add
+   a visible "DELAYED DATA" indicator until then.
+
+2. **Initial-load behaviour changed (no data on boot).** The app previously auto-scanned on mount
+   (`ScannerGrid.vue` → `runScan(false)`) and auto-connected the WS relay from the Nitro database
+   plugin. Both were removed: the app now boots with an empty grid and the operator manually triggers
+   scans. Revisit: decide whether an auto-rescan on SSE reconnect / app resume should be reintroduced
+   once live trading starts.
+
+3. **Trading methodology is expanding beyond The Strat.** Pulse Trader's scanner logic was built
+   around The Strat (CC codes, patterns, setups). The strategy is now a hybrid of The Strat + Ross
+   Cameron's momentum-day-trading approach, adapted to be proprietary. Revisit: the scanner's TA /
+   setup / quick-filter model will need to grow to cover momentum-day-trading concepts (pre-market
+   movers, gappers, float/OS, relative volume emphasis, etc.) — this touches `ta-calculator.ts`,
+   `strat-setup-engine.ts`, and the `ScannerRow` type, but was intentionally left out of the data-layer
+   refactor.
