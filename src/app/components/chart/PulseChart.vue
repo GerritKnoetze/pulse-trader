@@ -528,11 +528,17 @@ function drawUI(): void {
     const rRight     = Math.max(px1, drawX)
     const rTop       = Math.min(py1, drawY)
     const rBottom    = Math.max(py1, drawY)
-    const rInfoLines = [
+    // Direction-aware legend (same convention as the finished Ruler legend):
+    //   long  (isUp):  Close top → stats → Open bottom
+    //   short (!isUp): Open   top → stats → Close bottom
+    const rStats = [
       (priceDiff >= 0 ? '+' : '') + (Math.abs(priceDiff) >= 100 ? priceDiff.toFixed(2) : Math.abs(priceDiff) >= 1 ? priceDiff.toFixed(2) : priceDiff.toPrecision(3)),
       `${pSign}${pct.toFixed(2)}%`,
       `${rBarDiff} bar${rBarDiff === 1 ? '' : 's'}`,
     ]
+    const rInfoLines = isUp
+      ? [`C: ${fmtPrice(curPrice)}`, ...rStats, `O: ${fmtPrice(rulerPending.price)}`]
+      : [`O: ${fmtPrice(rulerPending.price)}`, ...rStats, `C: ${fmtPrice(curPrice)}`]
     rulerLayer.value?.drawInfoBox(c, rLeft, rRight, rTop, rBottom, isUp, rLineClr, rInfoLines, plW, plH)
     rulerLayer.value?.drawYLabels(c, py1, rulerPending.price, drawY, curPrice, isUp, plW, plH)
   }

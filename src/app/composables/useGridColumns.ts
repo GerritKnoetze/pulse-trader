@@ -14,8 +14,10 @@ export interface ColDef {
 }
 
 export const COLUMNS: ColDef[] = [
-  { key: 'symbol',    label: 'Symbol',       width: '72px',  align: 'left'   },
-  { key: 'atrPct',    label: 'ATR %',        width: '58px',  align: 'left'   },
+  { key: 'symbol',     label: 'Symbol',       width: '72px',  align: 'left'   },
+  { key: 'enrichLevel',label: 'Data',         width: '40px',  align: 'center', noSort: true, noFilter: true },
+  { key: 'wsActive',   label: 'WS',           width: '40px',  align: 'center', noSort: true, noFilter: true },
+  { key: 'atrPct',     label: 'ATR %',        width: '58px',  align: 'left'   },
   { key: 'last',      label: 'Last',         width: '74px',  align: 'left'   },
   { key: 'sector',    label: 'Sector',       width: '148px', align: 'left'   },
   { key: 'category',  label: 'Category',     width: '114px', align: 'left'   },
@@ -96,8 +98,17 @@ function resetColumns() {
 function initColumns() {
   const saved = loadGridState()
   if (saved) {
-    colOrder.value = saved.colOrder
-    colWidths.value = saved.colWidths
+    // Merge any columns that were added to COLUMNS AFTER the state was saved
+    // (they exist in neither colOrder nor hiddenCols and would otherwise be
+    // invisible/untoggleable). New columns append at the end.
+    const known = new Set(saved.colOrder)
+    const merged = [...saved.colOrder]
+    for (const c of COLUMNS) {
+      if (!known.has(c.key as string)) merged.push(c.key as string)
+    }
+    colOrder.value = merged
+    // Ensure widths exist for every column (saved state may be missing new keys).
+    colWidths.value = { ...DEFAULT_COL_WIDTHS, ...saved.colWidths }
     hiddenCols.value = new Set(saved.hiddenCols)
   }
 }

@@ -14,11 +14,10 @@ export default defineEventHandler(async (event) => {
       minRvol:          q.minRvol          ? Number(q.minRvol)          : undefined,
     }
 
-    const cursor = q.cursor ?? null
-    const limit  = Math.min(Math.max(Number(q.limit) || 50, 1), 200)
+    const visible = Math.min(Math.max(Number(q.visible) || 50, 10), 300)
 
     const engine = getScannerEngine()
-    const result = await engine.scan(criteria, cursor, limit)
+    const result = await engine.scan(criteria, visible)
 
     return { success: true, ...result }
   } catch (error) {

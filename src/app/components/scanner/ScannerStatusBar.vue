@@ -5,7 +5,7 @@ import { useScanner } from '~/composables/useScanner'
 const props = defineProps<{ logOpen?: boolean }>()
 const emit  = defineEmits<{ (e: 'toggle-log'): void }>()
 
-const { totalCount, showingCount, universeCount, lastScan, isScanning, wsStatus, serverWsStatus } = useScanner()
+const { totalCount, showingCount, universeCount, lastScan, isScanning, wsStatus, serverWsStatus, secondsToNextScan } = useScanner()
 
 const lastScanFormatted = computed(() => {
   if (!lastScan.value) return null
@@ -51,6 +51,7 @@ const wsDotClass = computed(() => {
       </span>
       <span v-if="lastScanFormatted" class="status-item">
         Last scan: <strong class="status-count">{{ lastScanFormatted }}</strong>
+        <span v-if="secondsToNextScan > 0" class="status-countdown">({{ secondsToNextScan }}s)</span>
       </span>
     </template>
 
@@ -105,6 +106,12 @@ const wsDotClass = computed(() => {
 .status-count {
   color: #c87628;
   font-weight: 700;
+}
+
+.status-countdown {
+  color: #555;
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.15rem;
 }
 
 .scanning-pulse {

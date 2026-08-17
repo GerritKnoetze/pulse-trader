@@ -1193,13 +1193,12 @@ contracts to preserve.
    once live trading starts.
 
 3. **Live feed temporarily disabled (2026-08-17).** While the data layer is being refactored
-   step-by-step, the entire live pipeline is switched off so only the initial load/scan path runs.
+   step-by-step, the upstream live pipeline is switched off so only the initial load/scan path runs.
    Controlled by `runtimeConfig.public.liveFeedEnabled` (set `LIVE_FEED_ENABLED=true` to re-enable).
-   Gated in three places: `scanner-engine.ts` constructor (WS tick handler not registered),
-   `scanner-engine.ts` `updateWsSubscriptions` (never subscribes → no on-demand WS connect), and
-   `useScanner.ts` `connectLive` (no EventSource). The grid is populated purely from the scan
-   response; charts still fetch static bars via `/api/scanner/chart-bars`. Revisit: re-enable and
-   validate reconnect gap-repair + tick accuracy before live trading.
+   Server-side gates: `scanner-engine.ts` constructor (WS tick handler not registered) and
+   `updateWsSubscriptions` (never subscribes → no on-demand WS connect). Note: the client SSE channel
+   was **re-enabled** for the two-phase scan (it carries scan rows + wsStatus, not upstream market
+   data). Revisit: re-enable and validate reconnect gap-repair + tick accuracy before live trading.
 
 4. **Trading methodology is expanding beyond The Strat.** Pulse Trader's scanner logic was built
    around The Strat (CC codes, patterns, setups). The strategy is now a hybrid of The Strat + Ross
@@ -1208,3 +1207,27 @@ contracts to preserve.
    movers, gappers, float/OS, relative volume emphasis, etc.) — this touches `ta-calculator.ts`,
    `strat-setup-engine.ts`, and the `ScannerRow` type, but was intentionally left out of the data-layer
    refactor.
+
+---
+
+## Appendix — Data-layer refactor progress (2026-08-17)
+
+Implemented so far (verified — build passes, migration `20260817000000` applied):
+
+| Gap | Item | What changed |
+|---|---|---|
+| C | Minute delta by timestamp | `getOrSyncMinuteBars` incremental fetch now passes Unix-ms timestamps instead of a date string — a warm sync no longer re-fetches the whole day |
+| E | Gap / partial-fetch detection | `fetchAggregates` THROWS on page error, empty page with pending `next_url`, or short-fall vs claimed count — partial results are never silently upserted |
+| J | ET session boundaries | New `src/server/utils/et-time.ts`; daily windows derived from US Eastern calendar days |
+| A | Sync state | New `MarketDataSyncState` table + repository methods; daily/minute syncs record latest ts / gaps / errors |
+| D | `getAggregates` coverage | Returns cached slice only if it fully covers `[from,to]`; otherwise backfills first |
+| K | Cursor pagination | Symbol→index `Map` rebuilt per scan (O(1) page 2+, was linear `findIndex`) |
+| — | Snapshot TTL + SWR | `snapshot-cache.ts`: market-hours-aware TTL (30s regular / 60s extended / 15min closed) + stale-while-revalidate background refresh |
+| — | minRvol pre-filter | `avgVol30Cache` (per-symbol, from last TA) lets `filterSnapshot` drop low-rvol candidates before enrichment; authoritative post-enrichment filter retained |
+| — | Progressive scan | Two-phase: page returns fast, then `enrichWithCallbacks` streams the next `PROGRESSIVE_LIMIT` (300) movers via SSE `update` frames (client upserts) |
+| L | Observability | New `src/server/services/metrics.ts` counters (L1 hit-rate, REST fetches/errors/gaps, snapshot, scans); exposed via `/api/scanner/status` |
+| — | Initial page size | `PAGE_SIZE` reduced 50 → 10 |
+
+**Not yet done (next steps):** retention enforcement on the WS write path (B), rate-limit-aware
+concurrency, `syncMarketData` concurrency, live-feed reconnect gap repair (deferred until the feed is
+re-enabled), SSE throttling/diffing, rowCache/alertsSent expiry (H).

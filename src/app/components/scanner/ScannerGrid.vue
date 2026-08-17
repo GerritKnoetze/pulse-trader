@@ -9,7 +9,7 @@ import ScannerLogConsole from '~/components/scanner/ScannerLogConsole.vue'
 import ScannerSetupsPanel from '~/components/scanner/ScannerSetupsPanel.vue'
 import ScannerAlertsDrawer from '~/components/scanner/ScannerAlertsDrawer.vue'
 
-const { clearFilters, initScanner, connectLive, disconnectLive } = useScanner()
+const { clearFilters, initScanner, connectLive, disconnectLive, startAutoRefresh, stopAutoRefresh } = useScanner()
 const { initColumns, resetColumns } = useGridColumns()
 const { initFilters, resetFilters, closeFilterDropdown } = useGridFilters()
 const { initLayouts } = useGridLayouts()
@@ -40,10 +40,15 @@ onMounted(() => {
   connectLive()
   // NOTE: no data is loaded on boot by design — the operator runs the initial
   // scans manually (toolbar refresh / criteria Scan button / empty-state CTA).
+  // Auto-rescan fires on the new minute (re-applies the filter over the cached
+  // universe and enriches symbols that newly entered the visible window) — but
+  // only once an initial scan has been performed.
+  startAutoRefresh()
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick)
+  stopAutoRefresh()
   disconnectLive()
 })
 </script>

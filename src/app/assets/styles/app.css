@@ -1094,7 +1094,7 @@ body {
 /* ==========  Toast Notifications  ========== */
 .toast-container {
   position: fixed;
-  top: 1.25rem;
+  bottom: 1.25rem;
   right: calc(1.25rem + 20px);
   z-index: 9999;
   display: flex;

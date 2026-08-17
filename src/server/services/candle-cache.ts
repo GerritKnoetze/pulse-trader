@@ -1,11 +1,14 @@
 import type { BarInput } from '../database/repositories/market-data-repository'
+import { getMetrics } from './metrics'
 
 // Per-timespan cache TTL.
-// Minute bars use a 15-minute TTL — long enough for chart clicks to be instant
-// after a scan. WS AM ticks call appendBar() in real-time, so the data stays
-// current during market hours regardless of this TTL.
+// Intraday entries are long-lived because the scanner's freshness check (period
+// elapsed vs. last bar) drives refetch — the TTL only needs to outlive a session
+// so entries don't expire mid-day and trigger redundant L2/L3 reads.
 const TTL_MS: Record<string, number> = {
-  minute: 15 * 60_000,
+  '10s':   5 * 60_000,
+  '5min':  6 * 60 * 60_000,
+  minute: 6 * 60 * 60_000,
   hour:   60 * 60_000,
   day:    24 * 60 * 60_000,
   week:   24 * 60 * 60_000,
@@ -25,8 +28,13 @@ class CandleCache {
   get(ticker: string, timespan: string): BarInput[] | null {
     const key = `${ticker}:${timespan}`
     const entry = this.store.get(key)
-    if (!entry) return null
-    if (Date.now() > entry.expiresAt) { this.store.delete(key); return null }
+    if (!entry) { getMetrics().increment('candleL1Misses'); return null }
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key)
+      getMetrics().increment('candleL1Misses')
+      return null
+    }
+    getMetrics().increment('candleL1Hits')
     return entry.bars
   }
 

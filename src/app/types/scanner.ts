@@ -58,6 +58,12 @@ export interface ScannerRow {
   atrDollar: number
   mtf: MtfState
   setup?: StratSetup
+  /** Data readiness of the row: 'none' = snapshot only, 'daily' = bars but no
+   *  intraday, 'full' = daily + intraday TA computed, 'error' = fetch was
+   *  rate-limited / failed. */
+  enrichLevel?: 'none' | 'daily' | 'full' | 'error'
+  /** True when the symbol is currently streamed by the live WebSocket relay. */
+  wsActive?: boolean
 }
 
 export type SortDirection = 'asc' | 'desc' | null

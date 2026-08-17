@@ -239,6 +239,11 @@ class WsRelay {
   getStatus(): WsStatus { return this.status }
   getSubscriptionCount(): number { return this.subscriptions.size }
 
+  /** True when the symbol's aggregate channel is currently subscribed. */
+  isSubscribed(symbol: string): boolean {
+    return this.subscriptions.has(`A.${symbol}`)
+  }
+
   // ── Private helpers ───────────────────────────────────────────────────────
 
   private sendSubscribe(params: string[]): void {

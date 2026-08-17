@@ -3,6 +3,36 @@ import { SettingsRepository } from '../database/repositories/settings-repository
 import { MarketDataRepository } from '../database/repositories/market-data-repository';
 import type { BarInput } from '../database/repositories/market-data-repository';
 import { decryptJsonFields } from '../utils/encryption';
+import { getMetrics } from './metrics';
+import { daysAgoEt, todayEt, yesterdayEt } from '../utils/et-time';
+
+// Hard ceiling for any single upstream API call — a hung Massive.com request
+// must never block a scan, chart, or sync indefinitely.
+const FETCH_TIMEOUT_MS = 15_000;
+
+function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
+/** Thrown when Massive.com rejects a request with a rate-limit (429). */
+export class RateLimitError extends Error {
+  constructor(ticker: string) {
+    super(`Massive.com rate limit hit for ${ticker}`);
+    this.name = 'RateLimitError';
+  }
+}
+
+function isRateLimitError(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status ?? (err as { response?: { status?: unknown } } | null)?.response?.status;
+  const msg = err instanceof Error ? err.message : String(err);
+  return status === 429 || /rate\s*limit|too many requests|exceeded.*limit|429/i.test(msg);
+}
 
 interface MassiveBar {
   t?: number;  // timestamp (ms)
@@ -131,6 +161,10 @@ function mapBar(ticker: string, timespan: string, bar: MassiveBar): BarInput {
 /**
  * Fetch aggregate bars from Massive.com and cache them locally.
  * Follows pagination (next_url) to retrieve all bars in the date range.
+ *
+ * Gap detection (gap E): any page failure, an empty page with a pending
+ * next_url, or a short-fall vs the API's claimed count THROWS — a partial
+ * result is never silently treated as complete.
  */
 export async function fetchAggregates(
   ticker: string,
@@ -141,55 +175,94 @@ export async function fetchAggregates(
 ): Promise<BarInput[]> {
   const { apiKey } = getDecryptedBrokerDetails();
   const client = createClient();
+  const metrics = getMetrics();
 
   const allBars: BarInput[] = [];
   let nextUrl: string | undefined;
+  let claimedCount = 0;
 
   // First request via client
+  let response: MassiveAggResponse;
+  metrics.increment('restFetches');
   try {
-    const response = await client.getStocksAggregates({
-      stocksTicker: ticker,
-      multiplier: String(multiplier),
-      timespan,
-      from,
-      to,
-      adjusted: 'true',
-      sort: 'asc',
-      limit: '50000',
-    }) as MassiveAggResponse;
-
-    const results = response?.results ?? response?.data?.results ?? [];
-    allBars.push(...results.map((bar: MassiveBar) => mapBar(ticker, timespan, bar)));
-    nextUrl = response?.next_url ?? response?.data?.next_url;
+    response = await withTimeout(
+      client.getStocksAggregates({
+        stocksTicker: ticker,
+        multiplier: String(multiplier),
+        timespan,
+        from,
+        to,
+        adjusted: 'true',
+        sort: 'asc',
+        limit: '50000',
+      }) as Promise<MassiveAggResponse>,
+      `Massive.com request for ${ticker}`,
+    );
   } catch (err: unknown) {
+    metrics.increment('restErrors');
+    if (isRateLimitError(err)) {
+      metrics.increment('restRateLimited');
+      throw new RateLimitError(ticker);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Massive.com API error for ${ticker}: ${msg}`);
   }
 
+  const firstResults = response?.results ?? response?.data?.results ?? [];
+  allBars.push(...firstResults.map((bar: MassiveBar) => mapBar(ticker, timespan, bar)));
+  claimedCount += response?.resultsCount ?? response?.data?.resultsCount ?? firstResults.length;
+  nextUrl = response?.next_url ?? response?.data?.next_url;
+
   // Follow pagination via next_url
   while (nextUrl) {
+    metrics.increment('restPageFetches');
+    let data: MassiveAggResponse;
     try {
       const separator = nextUrl.includes('?') ? '&' : '?';
       const paginatedUrl = nextUrl.includes('apiKey')
         ? nextUrl
         : `${nextUrl}${separator}apiKey=${encodeURIComponent(apiKey)}`;
-      const res = await fetch(paginatedUrl);
-      if (!res.ok) break;
-      const data = (await res.json()) as MassiveAggResponse;
-      const results = data?.results ?? [];
-      if (results.length === 0) break;
-      allBars.push(...results.map((bar: MassiveBar) => mapBar(ticker, timespan, bar)));
-      nextUrl = data?.next_url;
-    } catch {
-      break;
+      const res = await withTimeout(fetch(paginatedUrl), `Massive.com pagination for ${ticker}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = (await withTimeout(res.json(), `Massive.com pagination body for ${ticker}`)) as MassiveAggResponse;
+    } catch (err: unknown) {
+      metrics.increment('restErrors');
+      metrics.increment('restGaps');
+      if (isRateLimitError(err)) {
+        metrics.increment('restRateLimited');
+        throw new RateLimitError(ticker);
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Massive.com pagination error for ${ticker}: ${msg}`);
     }
+
+    const results = data?.results ?? [];
+    if (results.length === 0) {
+      // Server advertised a next_url but returned an empty page → incomplete.
+      metrics.increment('restErrors');
+      metrics.increment('restGaps');
+      throw new Error(`Massive.com returned an empty page for ${ticker} — data may be incomplete`);
+    }
+    allBars.push(...results.map((bar: MassiveBar) => mapBar(ticker, timespan, bar)));
+    claimedCount += data?.resultsCount ?? results.length;
+    nextUrl = data?.next_url;
+  }
+
+  // Integrity: the API claimed more bars across pages than we received.
+  if (claimedCount > allBars.length) {
+    metrics.increment('restGaps');
+    throw new Error(
+      `Massive.com fetch for ${ticker} incomplete (claimed ${claimedCount} bars, received ${allBars.length})`,
+    );
   }
 
   return allBars;
 }
 
 /**
- * Fetch and cache bars, returning from cache if already present.
+ * Fetch and cache bars, returning from cache if the stored range fully covers
+ * the requested [from, to] window (gap D). A partial cache is never returned
+ * as complete — missing coverage is backfilled from the API first.
  */
 export async function getAggregates(
   ticker: string,
@@ -204,31 +277,30 @@ export async function getAggregates(
   const fromTs = new Date(from).getTime();
   const toTs = new Date(to).getTime();
 
-  // Check cache first
-  const cached = repo.getBars(ticker, timespan, fromTs, toTs);
-  if (cached.length > 0) {
-    return cached.map(row => ({
-      ticker: row.Ticker,
-      timespan: row.Timespan,
-      timestamp: row.Timestamp,
-      open: row.Open,
-      high: row.High,
-      low: row.Low,
-      close: row.Close,
-      volume: row.Volume,
-      transactions: row.Transactions ?? undefined,
-    }));
+  const range = repo.getAvailableRange(ticker, timespan);
+  const covers =
+    range.count > 0
+    && range.min !== null && range.min <= fromTs
+    && range.max !== null && range.max >= toTs;
+
+  if (!covers) {
+    // Backfill the missing range so the returned slice is complete.
+    const bars = await fetchAggregates(ticker, multiplier, timespan, from, to);
+    if (bars.length > 0) repo.upsertBars(bars);
   }
 
-  // Fetch from API
-  const bars = await fetchAggregates(ticker, multiplier, timespan, from, to);
-
-  // Cache the results
-  if (bars.length > 0) {
-    repo.upsertBars(bars);
-  }
-
-  return bars;
+  const rows = repo.getBars(ticker, timespan, fromTs, toTs);
+  return rows.map(row => ({
+    ticker: row.Ticker,
+    timespan: row.Timespan,
+    timestamp: row.Timestamp,
+    open: row.Open,
+    high: row.High,
+    low: row.Low,
+    close: row.Close,
+    volume: row.Volume,
+    transactions: row.Transactions ?? undefined,
+  }));
 }
 
 /**
@@ -285,6 +357,17 @@ export function getMarketDataStatus() {
   };
 }
 
+/**
+ * Read bars directly from SQLite WITHOUT any upstream API call. Returns [] when
+ * nothing is stored for the range — callers decide whether to fall back to L3.
+ * Used by the chart path so opens never block on the network when data exists.
+ */
+export function readCachedBars(ticker: string, timespan: string, from: number, to: number): BarInput[] {
+  const repo = new MarketDataRepository();
+  const rows = repo.getBars(ticker, timespan, from, to);
+  return rows.map(mapRowToBar);
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 import type { MarketDataRow } from '../database/repositories/market-data-repository';
@@ -316,31 +399,45 @@ const MINUTE_WINDOW_CALENDAR_DAYS = 7;
  *
  * Only stores bars up to and including yesterday (completed candles).
  * Today's live price comes from the market snapshot, not stored bars.
+ * Date windows are computed in US Eastern time (gap J) so the session
+ * boundary never drifts near midnight.
  */
 export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
   const repo = new MarketDataRepository();
 
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const toStr = yesterday.toISOString().slice(0, 10)!;
-
+  const toStr = yesterdayEt();
   const latest = repo.getLatestTimestamp(ticker, 'day');
 
-  if (latest === null) {
-    // First fetch: pull full history
-    const from = new Date();
-    from.setDate(from.getDate() - DAILY_LOOKBACK_CALENDAR_DAYS);
-    const bars = await fetchAggregates(ticker, 1, 'day', from.toISOString().slice(0, 10)!, toStr);
-    if (bars.length > 0) repo.upsertBars(bars);
-  } else {
-    // Incremental: fetch only bars after the last stored date
-    const nextDay = new Date(latest);
-    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-    const fromStr = nextDay.toISOString().slice(0, 10)!;
-    if (fromStr <= toStr) {
-      const bars = await fetchAggregates(ticker, 1, 'day', fromStr, toStr);
-      if (bars.length > 0) repo.upsertBars(bars);
+  try {
+    if (latest === null) {
+      // First fetch: pull full history
+      const from = daysAgoEt(DAILY_LOOKBACK_CALENDAR_DAYS);
+      const bars = await fetchAggregates(ticker, 1, 'day', from, toStr);
+      if (bars.length > 0) {
+        repo.upsertBars(bars);
+        repo.updateSyncState(ticker, 'day', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+      }
+    } else {
+      // Incremental: fetch only bars after the last stored date
+      const nextDay = new Date(latest);
+      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+      const fromStr = nextDay.toISOString().slice(0, 10)!;
+      if (fromStr <= toStr) {
+        const bars = await fetchAggregates(ticker, 1, 'day', fromStr, toStr);
+        if (bars.length > 0) {
+          repo.upsertBars(bars);
+          repo.updateSyncState(ticker, 'day', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+        } else {
+          repo.updateSyncState(ticker, 'day', { latestTimestamp: latest });
+        }
+      } else {
+        repo.updateSyncState(ticker, 'day', { latestTimestamp: latest });
+      }
     }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    repo.updateSyncState(ticker, 'day', { latestTimestamp: latest ?? 0, syncError: msg });
+    throw err;
   }
 
   const cutoff = new Date();
@@ -356,6 +453,8 @@ export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
  *
  * Stores all bars up to and including the current minute.
  * WS AM events append today's bars in real-time via persistMinuteBar().
+ * The incremental delta is fetched by TIMESTAMP precision (gap C) so a warm
+ * sync never re-fetches the entire day containing the latest bar.
  */
 export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
   const repo = new MarketDataRepository();
@@ -363,29 +462,96 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - MINUTE_WINDOW_CALENDAR_DAYS);
   const cutoffMs = cutoff.getTime();
-  const fromStr = cutoff.toISOString().slice(0, 10)!;
-  const toStr = new Date().toISOString().slice(0, 10)!;
 
   // Prune expired bars first
   repo.pruneOlderThan(ticker, 'minute', cutoffMs);
 
   const latest = repo.getLatestTimestamp(ticker, 'minute');
 
-  if (latest === null || latest < cutoffMs) {
-    // No data or all data expired: fetch full window
-    const bars = await fetchAggregates(ticker, 1, 'minute', fromStr, toStr);
-    if (bars.length > 0) repo.upsertBars(bars, 'IGNORE');
-  } else {
-    // Incremental: fetch only from after the latest stored bar
-    const nextMinute = new Date(latest + 60_000);
-    const incrementalFrom = nextMinute.toISOString().slice(0, 10)!;
-    if (incrementalFrom <= toStr) {
-      const bars = await fetchAggregates(ticker, 1, 'minute', incrementalFrom, toStr);
-      if (bars.length > 0) repo.upsertBars(bars, 'IGNORE');
+  try {
+    if (latest === null || latest < cutoffMs) {
+      // No data or all data expired: fetch full window (date precision is fine here)
+      const fromStr = daysAgoEt(MINUTE_WINDOW_CALENDAR_DAYS);
+      const toStr = todayEt();
+      const bars = await fetchAggregates(ticker, 1, 'minute', fromStr, toStr);
+      if (bars.length > 0) {
+        repo.upsertBars(bars, 'IGNORE');
+        repo.updateSyncState(ticker, 'minute', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+      }
+    } else {
+      // Incremental: fetch from the next minute after the latest stored bar.
+      // Passed as a Unix-ms timestamp so the API starts exactly there instead
+      // of re-returning the whole day (the previous date-string truncation).
+      const incrementalFrom = latest + 60_000;
+      if (incrementalFrom <= Date.now()) {
+        const bars = await fetchAggregates(ticker, 1, 'minute', String(incrementalFrom), String(Date.now()));
+        if (bars.length > 0) {
+          repo.upsertBars(bars, 'IGNORE');
+          repo.updateSyncState(ticker, 'minute', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+        } else {
+          repo.updateSyncState(ticker, 'minute', { latestTimestamp: latest });
+        }
+      } else {
+        repo.updateSyncState(ticker, 'minute', { latestTimestamp: latest });
+      }
     }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    repo.updateSyncState(ticker, 'minute', { latestTimestamp: latest ?? 0, syncError: msg });
+    throw err;
   }
 
   const rows = repo.getBars(ticker, 'minute', cutoffMs, Date.now());
+  return rows.map(mapRowToBar);
+}
+
+/**
+ * Three-layer 5-minute bar fetch with rolling window — a REAL series fetched
+ * from the API (not derived), persisted to SQLite. Incremental delta by
+ * timestamp precision so each new 5-minute candle is picked up as its period
+ * elapses. REPLACE keeps the in-progress bucket current.
+ */
+export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[]> {
+  const repo = new MarketDataRepository();
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - MINUTE_WINDOW_CALENDAR_DAYS);
+  const cutoffMs = cutoff.getTime();
+
+  repo.pruneOlderThan(ticker, '5min', cutoffMs);
+
+  const latest = repo.getLatestTimestamp(ticker, '5min');
+
+  try {
+    if (latest === null || latest < cutoffMs) {
+      const fromStr = daysAgoEt(MINUTE_WINDOW_CALENDAR_DAYS);
+      const toStr = todayEt();
+      const bars = await fetchAggregates(ticker, 5, 'minute', fromStr, toStr);
+      if (bars.length > 0) {
+        repo.upsertBars(bars, 'REPLACE');
+        repo.updateSyncState(ticker, '5min', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+      }
+    } else {
+      const incrementalFrom = latest + 5 * 60_000;
+      if (incrementalFrom <= Date.now()) {
+        const bars = await fetchAggregates(ticker, 5, 'minute', String(incrementalFrom), String(Date.now()));
+        if (bars.length > 0) {
+          repo.upsertBars(bars, 'REPLACE');
+          repo.updateSyncState(ticker, '5min', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+        } else {
+          repo.updateSyncState(ticker, '5min', { latestTimestamp: latest });
+        }
+      } else {
+        repo.updateSyncState(ticker, '5min', { latestTimestamp: latest });
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    repo.updateSyncState(ticker, '5min', { latestTimestamp: latest ?? 0, syncError: msg });
+    throw err;
+  }
+
+  const rows = repo.getBars(ticker, '5min', cutoffMs, Date.now());
   return rows.map(mapRowToBar);
 }
 
@@ -396,4 +562,17 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
 export function persistMinuteBar(bar: BarInput): void {
   const repo = new MarketDataRepository();
   repo.upsertBars([bar], 'IGNORE');
+}
+
+/**
+ * 10-second bars — PLACEHOLDER until the live WS feed is re-enabled.
+ *
+ * Per design, the 10s timeframe is DERIVED from the WebSocket tick stream
+ * (per-second `A` aggregates / `T` trades aggregated into 10-second buckets),
+ * NOT fetched from the REST API. While the live feed is disabled there is no
+ * source for 10s bars, so this returns an empty series and the panel stays
+ * empty. Once live is enabled, derive 10s buckets here from tick data.
+ */
+export async function getTenSecondBars(_ticker: string): Promise<BarInput[]> {
+  return [];
 }

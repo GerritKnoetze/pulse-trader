@@ -2,7 +2,7 @@
 import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { useChartTabs } from '~/composables/useChartTabs'
 
-const { tabs, activeTab, setActiveTab, closeTab } = useChartTabs()
+const { tabs, activeTab, setActiveTab, closeTab, isTabLoading } = useChartTabs()
 </script>
 
 <template>
@@ -25,6 +25,7 @@ const { tabs, activeTab, setActiveTab, closeTab } = useChartTabs()
       :class="{ active: activeTab === tab.symbol }"
       @click="setActiveTab(tab.symbol)"
     >
+      <span v-if="isTabLoading(tab.symbol)" class="tab-spinner" />
       <span class="tab-label">{{ tab.symbol }}</span>
       <span class="tab-close" @click.stop="closeTab(tab.symbol)">
         <XMarkIcon class="tab-close-icon" />
@@ -99,6 +100,18 @@ const { tabs, activeTab, setActiveTab, closeTab } = useChartTabs()
 .tab-label {
   font-size: 0.81rem;
 }
+
+/* ── Tab loading spinner ─────────────────────────────────── */
+.tab-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(200, 118, 40, 0.25);
+  border-top-color: #c87628;
+  border-radius: 50%;
+  animation: tab-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes tab-spin { to { transform: rotate(360deg); } }
 
 .tab-symbol {
   min-width: 5rem;

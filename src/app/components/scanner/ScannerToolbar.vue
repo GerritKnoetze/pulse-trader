@@ -6,19 +6,16 @@ import { useScanner } from '~/composables/useScanner'
 import { useGridFilterPresets } from '~/composables/useGridFilterPresets'
 import { useGridFilters } from '~/composables/useGridFilters'
 import { useGridColumns } from '~/composables/useGridColumns'
-import type { ScannerTimeframe } from '~/types/scanner'
 
 const {
-  timeframe, activeQuickFilter,
-  setTimeframe, toggleQuickFilter, clearFilters,
+  activeQuickFilter,
+  toggleQuickFilter, clearFilters,
   QUICK_FILTERS, runScan, isScanning,
 } = useScanner()
 
 const { savedPresets, applyPreset } = useGridFilterPresets()
 const { resetFilters } = useGridFilters()
 const { autoSizeColumns } = useGridColumns()
-
-const TIMEFRAMES: ScannerTimeframe[] = ['1', '5', '15', '30', '60', 'D', 'W', 'M', 'Q', 'Y']
 
 const quickFiltersOpen = ref(false)
 const gridOptionsOpen = ref(false)
@@ -67,21 +64,6 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
     >
       <MagnifyingGlassIcon class="btn-icon" />
     </button>
-
-    <div class="toolbar-divider" />
-
-    <!-- Time frame buttons -->
-    <div class="tf-group">
-      <button
-        v-for="tf in TIMEFRAMES"
-        :key="tf"
-        class="tf-btn"
-        :class="{ active: tf === timeframe }"
-        @click="setTimeframe(tf)"
-      >
-        {{ tf }}
-      </button>
-    </div>
 
     <div class="toolbar-divider" />
 
@@ -183,35 +165,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
   z-index: 100;
 }
 
-/* Time frames */
-.tf-group {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.tf-btn {
-  background: none;
-  border: none;
-  color: var(--color-text-soft);
-  font-size: 0.82rem;
-  font-weight: 600;
-  padding: 0.3rem 0.55rem;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: all 0.15s ease;
-  letter-spacing: 0.02em;
-}
-
-.tf-btn:hover {
-  color: var(--color-text);
-  background: rgba(255, 255, 255, 0.07);
-}
-
-.tf-btn.active {
-  background: #c87628;
-  color: #fff;
-}
+/* Time frames — removed (timeframe selector deleted) */
 
 /* Divider */
 .toolbar-divider {
@@ -221,7 +175,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
   flex-shrink: 0;
 }
 
-/* Quick filters */
+/* Quick filters — secondary style (search button is the primary action) */
 .quick-filters-wrap {
   position: relative;
 }
@@ -229,18 +183,21 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 .quick-filters-btn {
   display: flex;
   align-items: center;
-  background: #c87628;
+  background: none;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  transition: background 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
 }
 
 .quick-filters-btn:hover {
-  background: #d9892e;
+  border-color: #555;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .quick-filters-btn.has-active {
-  background: #a86520;
+  border-color: #c87628;
 }
 
 .qf-trigger {
@@ -249,18 +206,27 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
   gap: 0.4rem;
   background: none;
   border: none;
-  color: #fff;
+  color: var(--color-text-soft);
   font-size: 0.82rem;
   font-weight: 600;
   padding: 0.32rem 0.75rem;
   cursor: pointer;
   white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.quick-filters-btn:hover .qf-trigger {
+  color: var(--color-text);
+}
+
+.quick-filters-btn.has-active .qf-trigger {
+  color: #c87628;
 }
 
 .qf-divider {
   width: 1px;
   align-self: stretch;
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--color-border);
   flex-shrink: 0;
 }
 
@@ -270,7 +236,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
   justify-content: center;
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--color-text-soft);
   padding: 0.32rem 0.5rem;
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
@@ -278,7 +244,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 }
 
 .qf-clear:hover {
-  color: #fff;
+  color: var(--color-text);
   background: rgba(0, 0, 0, 0.2);
 }
 

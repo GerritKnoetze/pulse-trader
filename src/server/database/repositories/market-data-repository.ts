@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BaseRepository } from '../base-repository';
+import { getMetrics } from '../../services/metrics';
 
 export interface MarketDataRow {
   Id: string;
@@ -27,14 +28,29 @@ export interface BarInput {
   transactions?: number;
 }
 
+export interface SyncStateRow {
+  Ticker: string;
+  Timespan: string;
+  LatestTimestamp: number;
+  LastSyncAt: string | null;
+  GapStart: number | null;
+  GapEnd: number | null;
+  SyncError: string | null;
+}
+
 export class MarketDataRepository extends BaseRepository {
   /**
    * Bulk upsert bars into the cache.
    * Uses INSERT OR REPLACE for efficiency.
    */
   upsertBars(bars: BarInput[], onConflict: 'REPLACE' | 'IGNORE' = 'REPLACE'): number {
-    if (bars.length === 0) return 0;
+    // Persistence invariant: daily, 1-minute and 5-minute bars are stored in
+    // SQLite. Everything else (10s, other derived timeframes) is in-memory /
+    // ephemeral only.
+    const persistable = bars.filter(b => b.timespan === 'day' || b.timespan === 'minute' || b.timespan === '5min');
+    if (persistable.length === 0) return 0;
 
+    getMetrics().increment('sqliteWrites', persistable.length);
     const now = new Date().toISOString();
     let inserted = 0;
 
@@ -46,7 +62,7 @@ export class MarketDataRepository extends BaseRepository {
           (@id, @ticker, @timespan, @timestamp, @open, @high, @low, @close, @volume, @transactions, @createdAt)
       `);
 
-      for (const bar of bars) {
+      for (const bar of persistable) {
         stmt.run({
           id: randomUUID(),
           ticker: bar.ticker,
@@ -71,6 +87,7 @@ export class MarketDataRepository extends BaseRepository {
    * Get bars for a ticker within a time range.
    */
   getBars(ticker: string, timespan: string, from: number, to: number): MarketDataRow[] {
+    getMetrics().increment('sqliteReads');
     return this.executeQuery<MarketDataRow>(
       `SELECT * FROM MarketData
        WHERE Ticker = @ticker AND Timespan = @timespan
@@ -155,5 +172,56 @@ export class MarketDataRepository extends BaseRepository {
       { ticker },
     );
     return result.changes;
+  }
+
+  // ── Sync state (MarketDataSyncState) ─────────────────────────────────────
+
+  getSyncState(ticker: string, timespan: string): SyncStateRow | null {
+    const rows = this.executeQuery<SyncStateRow>(
+      `SELECT Ticker, Timespan, LatestTimestamp, LastSyncAt, GapStart, GapEnd, SyncError
+       FROM MarketDataSyncState
+       WHERE Ticker = @ticker AND Timespan = @timespan`,
+      { ticker, timespan },
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Upsert the sync-state row for a ticker/timespan.
+   * Pass `gapStart`/`gapEnd` to record an incomplete fetch; `clearGap` when a
+   * later fetch completes the range.
+   */
+  updateSyncState(
+    ticker: string,
+    timespan: string,
+    opts: {
+      latestTimestamp?: number;
+      gapStart?: number | null;
+      gapEnd?: number | null;
+      syncError?: string | null;
+    } = {},
+  ): void {
+    const current = this.getSyncState(ticker, timespan);
+    const latest = opts.latestTimestamp ?? current?.LatestTimestamp ?? 0;
+    const gapStart = opts.gapStart !== undefined ? opts.gapStart : (current?.GapStart ?? null);
+    const gapEnd = opts.gapEnd !== undefined ? opts.gapEnd : (current?.GapEnd ?? null);
+    const error = opts.syncError !== undefined ? opts.syncError : (current?.SyncError ?? null);
+
+    this.executeRun(
+      `INSERT INTO MarketDataSyncState
+         (Ticker, Timespan, LatestTimestamp, LastSyncAt, GapStart, GapEnd, SyncError)
+       VALUES (@ticker, @timespan, @latest, @now, @gapStart, @gapEnd, @error)
+       ON CONFLICT(Ticker, Timespan) DO UPDATE SET
+         LatestTimestamp = @latest,
+         LastSyncAt      = @now,
+         GapStart        = @gapStart,
+         GapEnd          = @gapEnd,
+         SyncError       = @error`,
+      { ticker, timespan, latest, now: new Date().toISOString(), gapStart, gapEnd, error },
+    );
+  }
+
+  clearGap(ticker: string, timespan: string): void {
+    this.updateSyncState(ticker, timespan, { gapStart: null, gapEnd: null, syncError: null });
   }
 }

@@ -73,10 +73,11 @@ function handleDragEnd() {
           <span class="col-toggle-label">{{ col.label }}</span>
         </label>
       </div>
-      <!-- Hidden columns not yet in orderedColumns (fully hidden) -->
+      <!-- Columns not currently visible: hidden, or missing from the persisted
+           column order (e.g. columns added after the grid state was saved). -->
       <template v-for="col in COLUMNS" :key="'h-' + col.key">
         <div
-          v-if="hiddenCols.has(col.key as string)"
+          v-if="!orderedColumns.some(c => c.key === col.key)"
           class="col-toggle-row hidden"
         >
           <Bars3Icon class="col-drag-handle col-drag-handle--disabled" />

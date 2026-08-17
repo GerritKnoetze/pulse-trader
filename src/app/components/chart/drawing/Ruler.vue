@@ -195,11 +195,17 @@ function redraw(
     const pSign     = priceDiff >= 0 ? '+' : ''
     const pctSign   = pct >= 0 ? '+' : ''
 
-    const lines = [
+    // Legend order is direction-aware:
+    //   long  (isUp,  close > open):  Close top → stats → Open bottom
+    //   short (!isUp, close < open):  Open   top → stats → Close bottom
+    const stats = [
       fmtDelta(priceDiff),
       `${pSign}${pct.toFixed(2)}%`,
       `${barDiff} bar${barDiff === 1 ? '' : 's'}`,
     ]
+    const lines = isUp
+      ? [`C: ${fmtPrice(d.price2)}`, ...stats, `O: ${fmtPrice(d.price1)}`]
+      : [`O: ${fmtPrice(d.price1)}`, ...stats, `C: ${fmtPrice(d.price2)}`]
 
     drawInfoBox(c, left, right, top, bottom, isUp, lineClr, lines, plW, plH, isSelected)
 

@@ -1,16 +1,36 @@
 <script setup lang="ts">
-defineProps<{
+import { ref } from 'vue'
+
+const props = defineProps<{
   symbol:  string
   label:   string
   title:   string
   isDemo:  boolean
 }>()
+
+const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+function copySymbol() {
+  navigator.clipboard.writeText(props.symbol)
+    .then(() => {
+      copied.value = true
+      if (copyTimer) clearTimeout(copyTimer)
+      copyTimer = setTimeout(() => { copied.value = false }, 1200)
+    })
+    .catch(() => { /* clipboard unavailable */ })
+}
 </script>
 
 <template>
   <div class="panel-header">
     <div class="header-left">
-      <span class="symbol">{{ symbol }}</span>
+      <span
+        class="symbol"
+        :class="{ copied }"
+        :title="`Copy ${symbol}`"
+        @click="copySymbol"
+      >{{ copied ? '✓ Copied' : symbol }}</span>
       <span class="tf-chip">{{ label }}</span>
       <span class="title">{{ title }}</span>
     </div>
@@ -43,6 +63,17 @@ defineProps<{
   font-size:      12px;
   font-weight:    700;
   letter-spacing: 0.04em;
+  cursor:         pointer;
+  transition:     color 0.15s ease;
+  user-select:    none;
+}
+
+.symbol:hover {
+  color: #fff;
+}
+
+.symbol.copied {
+  color: #4ade80;
 }
 
 .tf-chip {

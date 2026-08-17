@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { MagnifyingGlassIcon, TrashIcon } from '@heroicons/vue/24/outline'
+import { ArrowPathIcon, MagnifyingGlassIcon, TrashIcon } from '@heroicons/vue/24/outline'
 import ScannerSymbolSearch from '~/components/scanner/ScannerSymbolSearch.vue'
 import { useChartSync } from '~/composables/useChartSync'
 import { useDrawingTools } from '~/composables/useDrawingTools'
+
+defineProps<{ refreshing?: boolean }>()
+const emit = defineEmits<{ refresh: [] }>()
 
 const { syncEnabled } = useChartSync()
 const { activeTool, setActiveTool, selectedDrawingId, deleteSelected, magnetEnabled } = useDrawingTools()
@@ -49,6 +52,16 @@ onUnmounted(() => {
       @click="symbolSearchOpen = true"
     >
       <MagnifyingGlassIcon class="btn-icon" />
+    </button>
+
+    <!-- Force refresh this symbol's data (re-syncs from the data provider) -->
+    <button
+      class="sync-btn refresh-chart-btn"
+      title="Force refresh data"
+      :disabled="refreshing"
+      @click="emit('refresh')"
+    >
+      <ArrowPathIcon class="sync-icon" :class="{ spinning: refreshing }" />
     </button>
 
     <div class="toolbar-divider" />
@@ -253,6 +266,18 @@ onUnmounted(() => {
 .sync-btn.active:hover {
   background:   #d9892e;
   border-color: #d9892e;
+}
+
+.refresh-chart-btn:disabled {
+  opacity: 0.5;
+  cursor:  default;
+}
+
+.sync-icon.spinning {
+  animation: chart-refresh-spin 0.8s linear infinite;
+}
+@keyframes chart-refresh-spin {
+  to { transform: rotate(360deg); }
 }
 
 .sync-btn.ctrl-hint,

@@ -24,7 +24,9 @@ import { getSnapshotCache } from './snapshot-cache'
 import { getCandleCache } from './candle-cache'
 import { computeTA, computeRVOL, computeFTFC, computeMtfState, computeCcCodes, computePattern, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min, type TodaySnap } from './ta-calculator'
 import { getWsRelay } from './ws-relay'
-import { getOrSyncDailyBars, getOrSyncMinuteBars, persistMinuteBar } from './market-data.service'
+import { getOrSyncDailyBars, getOrSyncMinuteBars, getOrSyncFiveMinuteBars, persistMinuteBar, RateLimitError } from './market-data.service'
+import { getMetrics } from './metrics'
+import { isMarketSession, etDateString } from '../utils/et-time'
 import { appLog } from './app-log'
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -32,6 +34,11 @@ import { appLog } from './app-log'
 const TIER1_SIZE      = 50   // full A+Q subscriptions
 const TIER2_SIZE      = 150  // A-only subscriptions
 const MAX_CONCURRENCY = 10   // parallel bar fetches per scan page
+
+// Period lengths used by the period-elapse freshness check.
+const MINUTE_MS       = 60_000
+const FIVE_MINUTE_MS  = 5 * MINUTE_MS
+const DAY_MS          = 24 * 60 * MINUTE_MS
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -86,6 +93,38 @@ class ScannerEngine {
   private lastCriteria: ScanCriteria | null = null
   private lastSortedCandidates: SnapshotTicker[] = []
 
+  // symbol → last computed avgVol30 (from TA). Used to pre-filter minRvol in
+  // the snapshot filter so enrichment is not wasted on rows that will be
+  // dropped by the post-enrichment rvol filter.
+  private avgVol30Cache = new Map<string, number>()
+
+  // Symbols with an open chart tab. The data layer keeps these fresh on every
+  // new period and pushes the new bars to charts as SSE events (no polling).
+  private watchedSymbols = new Set<string>()
+
+  // Last bar timestamp broadcast per `${symbol}:${timespan}` — only the newly
+  // completed bars (deltas) are pushed to charts.
+  private lastSentBar = new Map<string, number>()
+
+  // ET calendar day each watched symbol was last daily-refreshed (daily closed
+  // candles only change once per day, so skip the daily DB sync otherwise).
+  private lastDailyDay = new Map<string, string>()
+
+  private periodTimer: ReturnType<typeof setTimeout> | null = null
+  private refreshingWatched = false
+
+  // Symbols whose TA has already been computed this session — enrichment is
+  // only scheduled for symbols missing from this set (dedup across refreshes).
+  private enrichedSymbols = new Set<string>()
+
+  // Symbols dropped by the authoritative minRvol filter — excluded from the
+  // visible window so they never reappear as unenriched minimal rows.
+  private rejectedSymbols = new Set<string>()
+
+  // Background enrichment of the visible window (never awaited).
+  private progressiveGeneration = 0
+  private progressiveActive = false
+
   constructor() {
     // Wire WS tick handler — only when the live feed is enabled. With it off,
     // the engine purely serves the scan/initial-load path (no WS ticks, no
@@ -118,111 +157,84 @@ class ScannerEngine {
       // 'connecting' and 'authenticating' intentionally not logged / broadcast
     })
 
+    // Period-elapse refresh for watched chart symbols: on every new minute the
+    // data layer advances the cache/DB and pushes the new candles to open charts
+    // as SSE bar events.
+    this.schedulePeriodRefresh()
+
   }
 
   // ── Public API ──────────────────────────────────────────────────────────
 
-  /**
-   * Run a full scan with the given criteria and return a page of results.
-   * @param criteria  filter parameters
-   * @param cursor    symbol to start after (for pagination), or null for first page
-   * @param limit     max rows to return per page
-   */
-  async scan(criteria: ScanCriteria, cursor: string | null, limit: number): Promise<ScanPage> {
-    const scanStart = Date.now()
-    const isFirstPage = !cursor
-    if (isFirstPage) {
-      const parts: string[] = []
-      if (criteria.minPrice != null || criteria.maxPrice != null)
-        parts.push(`price ${criteria.minPrice ?? ''}–${criteria.maxPrice ?? ''}`)
-      if (criteria.minChangePercent != null || criteria.maxChangePercent != null)
-        parts.push(`chg% ${criteria.minChangePercent ?? ''}–${criteria.maxChangePercent ?? ''}`)
-      if (criteria.minVolume != null) parts.push(`vol ≥${criteria.minVolume.toLocaleString()}`)
-      const criteriaDetail = Object.entries(criteria)
-        .filter(([, v]) => v !== undefined && v !== null)
-        .map(([k, v]) => `${k}=${v}`).join(', ')
-      appLog(`Scan started${parts.length ? ' — ' + parts.join(', ') : ''}`, 'info',
-        `Criteria: {${criteriaDetail || 'none'}} | Cursor: ${cursor ?? 'start'} | Limit: ${limit} | RowCache: ${this.rowCache.size} rows | SSE clients: ${this.sseClients.size}`)
-    }
+   /**
+    * Run a scan: re-filter the cached universe and return the top `visible`
+    * matched symbols as rows — instant, since unenriched rows are minimal
+    * snapshot rows with no bar fetches. Enrichment of the visible window runs
+    * in the background: symbols new to the window get enriched, already
+    * enriched ones are served from the row cache.
+    * @param criteria filter parameters
+    * @param visible  number of top matches to show in the grid
+    */
+   async scan(criteria: ScanCriteria, visible: number): Promise<ScanPage> {
+     const scanStart = Date.now()
+     getMetrics().increment('scans')
 
-    const snapshot = await getSnapshotCache().getSnapshot()
-    // Deduplicate by ticker (API can return the same symbol from multiple exchanges)
-    const seen = new Set<string>()
-    const unique = snapshot.filter(t => { if (seen.has(t.ticker)) return false; seen.add(t.ticker); return true })
-    const candidates = filterSnapshot(unique, criteria)
+     const snapshot = await getSnapshotCache().getSnapshot()
+     // Deduplicate by ticker (API can return the same symbol from multiple exchanges)
+     const seen = new Set<string>()
+     const unique = snapshot.filter(t => { if (seen.has(t.ticker)) return false; seen.add(t.ticker); return true })
+     const candidates = filterSnapshot(unique, criteria, this.avgVol30Cache)
 
-    if (isFirstPage) {
-      const deduped = snapshot.length - unique.length
-      const filtered = unique.length - candidates.length
-      const pct = unique.length > 0 ? ((candidates.length / unique.length) * 100).toFixed(1) : '0.0'
-      appLog(`Snapshot: ${snapshot.length.toLocaleString()} universe → ${candidates.length.toLocaleString()} matched`, 'info',
-        `Deduped: ${deduped} duplicate tickers removed | Unique: ${unique.length.toLocaleString()} | Filtered out: ${filtered.toLocaleString()} by price/chg%/vol | Pass rate: ${pct}%`)
-    }
+     // Sort by |change%| descending so biggest movers are first
+     candidates.sort((a, b) => Math.abs(b.todaysChangePerc) - Math.abs(a.todaysChangePerc))
 
-    // Sort by |change%| descending so biggest movers are first
-    candidates.sort((a, b) => Math.abs(b.todaysChangePerc) - Math.abs(a.todaysChangePerc))
+     this.lastSortedCandidates = candidates
+     this.lastCriteria = criteria
 
-    this.lastSortedCandidates = candidates
-    this.lastCriteria = criteria
+     // Pre-populate prevDayClose for tier1+tier2 symbols so onTick can
+     // compute live chg$ / chg% without snapshot data at tick time.
+     for (const t of candidates.slice(0, TIER1_SIZE + TIER2_SIZE)) {
+       let state = this.intraday.get(t.ticker)
+       if (!state) {
+         state = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
+         this.intraday.set(t.ticker, state)
+       }
+       if (t.prevDay.c) state.prevDayClose = t.prevDay.c
+     }
 
-    // Pre-populate prevDayClose for all tier1+tier2 symbols so onTick can
-    // compute live chgDollar / chgPct without snapshot data at tick time.
-    for (const t of candidates.slice(0, TIER1_SIZE + TIER2_SIZE)) {
-      let state = this.intraday.get(t.ticker)
-      if (!state) {
-        state = { '1': 'up', '5': 'up', '15': 'up', '30': 'up', '60': 'up' }
-        this.intraday.set(t.ticker, state)
-      }
-      if (t.prevDay.c) state.prevDayClose = t.prevDay.c
-    }
+     // Visible window: top `visible` matches, excluding minRvol-rejected symbols.
+     const window = candidates.slice(0, visible).filter(c => !this.rejectedSymbols.has(c.ticker))
 
-    // Pagination: find cursor position
-    let startIdx = 0
-    if (cursor) {
-      const idx = candidates.findIndex(c => c.ticker === cursor)
-      if (idx >= 0) startIdx = idx + 1
-    }
+     // Build rows instantly — enriched from the row cache when available,
+     // otherwise a minimal snapshot row. No bar fetches on this path.
+     const rows: ScannerRow[] = []
+     for (const t of window) {
+       const row = this.rowCache.get(t.ticker) ?? this.buildMinimalRow(t)
+       if (row) rows.push(row)
+     }
 
-    const page = candidates.slice(startIdx, startIdx + limit)
-    const symbolPreview = page.slice(0, 8).map(t => t.ticker).join(', ') + (page.length > 8 ? ` … +${page.length - 8}` : '')
-    appLog(`Enriching ${page.length} symbol${page.length !== 1 ? 's' : ''} (page offset ${startIdx})`, 'info',
-      `Symbols: [${symbolPreview}] | Concurrency: ${MAX_CONCURRENCY} workers | Intraday timeout: 30 s | CandleCache before: ${getCandleCache().size} entries`)
-    const enrichStart = Date.now()
-    const enriched = await this.enrichPage(page)
-    const enrichMs = Date.now() - enrichStart
-    appLog(`Enriched ${enriched.length}/${page.length} symbols — TA computed`, 'info',
-      `Duration: ${enrichMs} ms | Skipped (no data): ${page.length - enriched.length} | CandleCache after: ${getCandleCache().size} entries | RowCache: ${this.rowCache.size} rows`)
+     // Update WS subscriptions based on full sorted list
+     this.updateWsSubscriptions(candidates.slice(0, TIER1_SIZE + TIER2_SIZE))
 
-    // Apply minRvol filter post-enrichment (requires computed avgVol30 from bar data)
-    const rows = criteria.minRvol != null
-      ? enriched.filter(r => r.rvol >= criteria.minRvol!)
-      : enriched
+     // Refresh wsActive on all returned rows to reflect the just-made subscriptions.
+     for (const row of rows) row.wsActive = this.isWsActive(row.symbol)
 
-    // Update row cache
-    for (const row of rows) this.rowCache.set(row.symbol, row)
+     this.lastScanAt = new Date().toISOString()
 
-    // Update WS subscriptions based on full sorted list
-    this.updateWsSubscriptions(candidates.slice(0, TIER1_SIZE + TIER2_SIZE))
+     appLog(`Scan — ${rows.length} rows in grid (matched ${candidates.length.toLocaleString()})`, 'info',
+       `Universe: ${snapshot.length.toLocaleString()} | Visible: ${window.length} | Total duration: ${Date.now() - scanStart} ms | RowCache: ${this.rowCache.size} rows | SSE clients: ${this.sseClients.size}`)
 
-    this.lastScanAt = new Date().toISOString()
-    if (isFirstPage) {
-      const tickers = rows.slice(0, 5).map(r => r.symbol).join(', ')
-      const totalMs = Date.now() - scanStart
-      const rvolRemoved = enriched.length - rows.length
-      appLog(`Scan complete — ${rows.length} rows${rows.length > 0 ? ` (top: ${tickers}${rows.length > 5 ? '…' : ''})` : ''}`, 'info',
-        `Total duration: ${totalMs} ms | rVol filter removed: ${rvolRemoved} | RowCache: ${this.rowCache.size} rows | WS subscriptions: ${getWsRelay().getSubscriptionCount()}`)
-    }
+     // Enrich any visible symbols missing enrichment (background, top-down).
+     this.enrichVisible(candidates, visible)
 
-    return {
-      rows,
-      total: candidates.length,
-      nextCursor: startIdx + limit < candidates.length
-        ? candidates[startIdx + limit - 1]!.ticker
-        : null,
-      universeCount: snapshot.length,
-      lastScan: this.lastScanAt,
-    }
-  }
+     return {
+       rows,
+       total: candidates.length,
+       nextCursor: candidates.length > window.length ? 'more' : null,
+       universeCount: snapshot.length,
+       lastScan: this.lastScanAt,
+     }
+   }
 
   getCachedRows(): ScannerRow[] { return [...this.rowCache.values()] }
 
@@ -241,6 +253,157 @@ class ScannerEngine {
       cachedRows:      this.rowCache.size,
       sseClients:      this.sseClients.size,
       lastScan:        this.lastScanAt,
+      metrics:         getMetrics().snapshot,
+    }
+  }
+
+  /**
+   * Register a symbol whose chart tab is open. The data layer keeps its series
+   * fresh on each new period and broadcasts the new bars via SSE. An immediate
+   * background refresh (plus initial bar broadcast) runs right away.
+   */
+  watchSymbol(symbol: string): void {
+    this.watchedSymbols.add(symbol)
+    void this.refreshSymbolBars(symbol).catch(() => { /* non-critical */ })
+  }
+
+  /** Unregister a symbol when its chart tab is closed. */
+  unwatchSymbol(symbol: string): void {
+    this.watchedSymbols.delete(symbol)
+  }
+
+  getWatchedSymbols(): string[] {
+    return [...this.watchedSymbols]
+  }
+
+  /**
+   * Force a full re-sync of one symbol's series from the data provider —
+   * bypassing the period-elapse staleness gates — updates cache/DB and pushes
+   * the complete fresh series to the chart via SSE bar events.
+   * Returns bar counts per timespan.
+   */
+  async forceRefreshSymbol(symbol: string): Promise<{ minute: number; fiveMin: number; day: number }> {
+    const counts = { minute: 0, fiveMin: 0, day: 0 }
+
+    try {
+      const minuteBars = await getOrSyncMinuteBars(symbol)
+      if (minuteBars.length > 0) {
+        getCandleCache().set(symbol, 'minute', minuteBars)
+        counts.minute = minuteBars.length
+        this.lastSentBar.set(`${symbol}:minute`, minuteBars[minuteBars.length - 1]!.timestamp)
+        this.broadcastBars(symbol, 'minute', minuteBars)
+      }
+    } catch { /* non-critical */ }
+
+    try {
+      const fiveBars = await getOrSyncFiveMinuteBars(symbol)
+      if (fiveBars.length > 0) {
+        getCandleCache().set(symbol, '5min', fiveBars)
+        counts.fiveMin = fiveBars.length
+        this.lastSentBar.set(`${symbol}:5min`, fiveBars[fiveBars.length - 1]!.timestamp)
+        this.broadcastBars(symbol, '5min', fiveBars)
+      }
+    } catch { /* non-critical */ }
+
+    try {
+      const dailyBars = await getOrSyncDailyBars(symbol)
+      if (dailyBars.length > 0) {
+        getCandleCache().set(symbol, 'day', dailyBars)
+        counts.day = dailyBars.length
+        this.lastSentBar.set(`${symbol}:day`, dailyBars[dailyBars.length - 1]!.timestamp)
+        this.broadcastBars(symbol, 'day', dailyBars)
+      }
+    } catch { /* non-critical */ }
+
+    this.lastDailyDay.set(symbol, etDateString(Date.now()))
+    return counts
+  }
+
+  // ── Private: watched-symbol period refresh ───────────────────────────────
+
+  private schedulePeriodRefresh(): void {
+    const now = Date.now()
+    const delay = 60_000 - (now % 60_000) + 300
+    this.periodTimer = setTimeout(() => {
+      if (this.watchedSymbols.size > 0) void this.refreshWatchedSymbols()
+      this.schedulePeriodRefresh()
+    }, delay)
+  }
+
+  private async refreshWatchedSymbols(): Promise<void> {
+    if (this.refreshingWatched) return
+    this.refreshingWatched = true
+    try {
+      const targets = [...this.watchedSymbols]
+      const concurrency = Math.min(4, targets.length)
+      let next = 0
+      const worker = async () => {
+        while (next < targets.length) {
+          const sym = targets[next++]!
+          await this.refreshSymbolBars(sym)
+        }
+      }
+      await Promise.all(Array.from({ length: concurrency }, worker))
+    } finally {
+      this.refreshingWatched = false
+    }
+  }
+
+  /**
+   * Refetch each period-elapsed series for one watched symbol (updates
+   * cache/DB) and broadcast only the newly completed bars as SSE events.
+   */
+  private async refreshSymbolBars(symbol: string): Promise<void> {
+    // 1-minute — the primary driver of chart updates.
+    try {
+      const minuteBars = await this.getIntradayBars(symbol)
+      const key = `${symbol}:minute`
+      const last = this.lastSentBar.get(key) ?? 0
+      const fresh = minuteBars.filter(b => b.timestamp > last)
+      if (fresh.length > 0) {
+        this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
+        this.broadcastBars(symbol, 'minute', fresh)
+      }
+    } catch { /* non-critical */ }
+
+    // 5-minute — internally period-gated, so it only fetches when a 5m bucket elapsed.
+    try {
+      const fiveBars = await this.getFiveMinuteBars(symbol)
+      const key = `${symbol}:5min`
+      const last = this.lastSentBar.get(key) ?? 0
+      const fresh = fiveBars.filter(b => b.timestamp > last)
+      if (fresh.length > 0) {
+        this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
+        this.broadcastBars(symbol, '5min', fresh)
+      }
+    } catch { /* non-critical */ }
+
+    // Daily — once per ET day (closed candles only change at the day boundary).
+    const day = etDateString(Date.now())
+    if (this.lastDailyDay.get(symbol) !== day) {
+      this.lastDailyDay.set(symbol, day)
+      try {
+        const dailyBars = await this.getDailyBars(symbol)
+        const key = `${symbol}:day`
+        const last = this.lastSentBar.get(key) ?? 0
+        const fresh = dailyBars.filter(b => b.timestamp > last)
+        if (fresh.length > 0) {
+          this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
+          this.broadcastBars(symbol, 'day', fresh)
+        }
+      } catch { /* non-critical */ }
+    }
+  }
+
+  private broadcastBars(symbol: string, timespan: string, bars: BarInput[]): void {
+    const payload = {
+      type: 'bars',
+      symbol,
+      timespan,
+      bars: bars.map(b => ({ t: b.timestamp, o: b.open, h: b.high, l: b.low, c: b.close, v: b.volume })),
+    }
+    for (const writer of this.sseClients.values()) {
+      try { writer(payload) } catch { /* ignore disconnected clients */ }
     }
   }
 
@@ -249,17 +412,22 @@ class ScannerEngine {
 
   // ── Private: enrichment ──────────────────────────────────────────────────
 
-  private async enrichPage(candidates: SnapshotTicker[]): Promise<ScannerRow[]> {
-    // Work-stealing pool: always keep MAX_CONCURRENCY enrichments in-flight.
-    // Unlike serial batching (wait for all 10 before starting the next 10),
-    // each worker immediately picks the next symbol as soon as it finishes.
-    // This eliminates the "wait for the slowest L3 fetch in a batch" stall.
+  /**
+   * Work-stealing enrichment pool. Calls `onRow` the moment each row completes
+   * so background workers can stream rows via SSE as they finish.
+   */
+  private async enrichWithCallbacks(
+    candidates: SnapshotTicker[],
+    onRow: (row: ScannerRow) => void,
+  ): Promise<ScannerRow[]> {
     const results: (ScannerRow | null)[] = new Array(candidates.length).fill(null)
     let nextIdx = 0
     const worker = async () => {
       while (nextIdx < candidates.length) {
         const i = nextIdx++
-        results[i] = await this.enrichTicker(candidates[i]!)
+        const row = await this.enrichTicker(candidates[i]!)
+        if (row) onRow(row)
+        results[i] = row
       }
     }
     const workers = Array.from(
@@ -270,7 +438,44 @@ class ScannerEngine {
     return results.filter((r): r is ScannerRow => r !== null)
   }
 
+  /**
+   * Background enrichment of the visible window (never awaited). Only symbols
+   * missing enrichment are processed; completed rows stream via SSE. Rows that
+   * fail the authoritative minRvol filter (needs bar data) are rejected — they
+   * are dropped from the grid via a `rowRemoved` frame and excluded from future
+   * visible windows. A new scan bumps `progressiveGeneration`, invalidating an
+   * in-flight run's broadcasts.
+   */
+  private enrichVisible(candidates: SnapshotTicker[], visible: number): void {
+    const targets = candidates
+      .slice(0, visible)
+      .filter(c => !this.enrichedSymbols.has(c.ticker) && !this.rejectedSymbols.has(c.ticker))
+    if (targets.length === 0) return
+    const gen = ++this.progressiveGeneration
+    this.progressiveActive = true
+    void this.enrichWithCallbacks(targets, (row) => {
+      if (gen !== this.progressiveGeneration) return
+      this.enrichedSymbols.add(row.symbol)
+      getMetrics().increment('scanEnrichedRows')
+      const c = this.lastCriteria
+      if (c?.minRvol != null && row.rvol < c.minRvol) {
+        this.rejectedSymbols.add(row.symbol)
+        this.rowCache.delete(row.symbol)
+        this.broadcastRowRemoved(row.symbol)
+        return
+      }
+      this.rowCache.set(row.symbol, row)
+      getMetrics().increment('scanProgressiveRows')
+      this.broadcastUpdate(row)
+    }).finally(() => {
+      if (gen === this.progressiveGeneration) this.progressiveActive = false
+    })
+  }
+
   private async enrichTicker(ticker: SnapshotTicker): Promise<ScannerRow | null> {
+    // Track whether any upstream fetch was rate-limited so the Data column can
+    // flag the symbol instead of silently showing a degraded row.
+    let rateLimited = false
     try {
       const dailyBars = await this.getDailyBars(ticker.ticker)
       if (dailyBars.length < 2) {
@@ -292,11 +497,16 @@ class ScannerEngine {
         )
         minuteBars = await Promise.race([this.getIntradayBars(ticker.ticker), timeoutPromise])
       } catch (err) {
+        if (err instanceof RateLimitError) rateLimited = true
         const errType = err instanceof Error ? err.constructor.name : 'UnknownError'
         appLog(`${ticker.ticker}: intraday fetch failed — ${String(err).slice(0, 80)}`, 'warn',
           `Symbol: ${ticker.ticker} | Error type: ${errType} | Layer: L1 (CandleCache) → L2 (SQLite) → L3 (Massive.com API) | Daily bars: ${dailyBars.length} available — TA will use daily-only MTF fallback`)
         /* non-critical — TA will use daily-only MTF fallback */
       }
+
+      // Warm the real 5-minute series so the DB/cache has the latest candle
+      // once each 5-minute period elapses. Non-blocking — never slows enrichment.
+      void this.getFiveMinuteBars(ticker.ticker).catch(() => { /* optional */ })
 
       // Store today's open first so we can use intraState.lastPrice (live WS price)
       // as the most reliable current price when building todaySnap.
@@ -325,6 +535,7 @@ class ScannerEngine {
       } : undefined
 
       const ta = computeTA(dailyBars, minuteBars.length > 0 ? minuteBars : undefined, todaySnap)
+      this.avgVol30Cache.set(ticker.ticker, ta.avgVol30)
 
       // Safety net: if todaySnap was unavailable (ticker.day.o = 0), derive D direction
       // from the snapshot's todaysChangePerc which is always populated and represents
@@ -361,6 +572,8 @@ class ScannerEngine {
         pattern: ta.pattern,
         signal: ta.signal,
         category: ta.category,
+        enrichLevel: rateLimited ? 'error' : minuteBars.length > 0 ? 'full' : 'daily',
+        wsActive: this.isWsActive(ticker.ticker),
       }
 
       // Score Strat setup on intraday TFs (day trading only — no daily/swing setups)
@@ -388,13 +601,13 @@ class ScannerEngine {
       }
 
       return row
-    } catch {
-      return this.buildMinimalRow(ticker)
+    } catch (err) {
+      return this.buildMinimalRow(ticker, err instanceof RateLimitError ? 'error' : 'none')
     }
   }
 
 
-  private buildMinimalRow(ticker: SnapshotTicker): ScannerRow | null {
+  private buildMinimalRow(ticker: SnapshotTicker, enrichLevel: 'none' | 'error' = 'none'): ScannerRow | null {
     const last = ticker.lastTrade?.p || ticker.day.c || ticker.prevDay.c
     if (!last) return null
     return {
@@ -417,13 +630,22 @@ class ScannerEngine {
       pattern: '',
       signal: '',
       category: '',
+      enrichLevel,
+      wsActive: this.isWsActive(ticker.ticker),
     }
   }
 
+  /** True when the live WS relay is connected AND streaming this symbol. */
+  private isWsActive(symbol: string): boolean {
+    const relay = getWsRelay()
+    return relay.getStatus() === 'connected' && relay.isSubscribed(symbol)
+  }
+
   private async getDailyBars(symbol: string): Promise<BarInput[]> {
-    // L1: in-memory CandleCache
+    // L1: in-memory CandleCache — serve if fresh for the daily period (24 h) or
+    // the market is closed (no new candle to fetch).
     const cached = getCandleCache().get(symbol, 'day')
-    if (cached) return cached
+    if (cached && (!isMarketSession(Date.now()) || isSeriesCurrent(cached, DAY_MS))) return cached
 
     // L2 → L3: SQLite DB (incremental) → Massive.com API (delta/full)
     const bars = await getOrSyncDailyBars(symbol)
@@ -432,13 +654,26 @@ class ScannerEngine {
   }
 
   private async getIntradayBars(symbol: string): Promise<BarInput[]> {
-    // L1: in-memory CandleCache
+    // L1: in-memory CandleCache — serve if fresh for the 1-minute period or the
+    // market is closed. Otherwise refetch so each new minute creates its candle.
     const cached = getCandleCache().get(symbol, 'minute')
-    if (cached) return cached
+    if (cached && (!isMarketSession(Date.now()) || isSeriesCurrent(cached, MINUTE_MS))) return cached
 
     // L2 → L3: SQLite DB (rolling 5-day window) → Massive.com API (delta/full)
     const bars = await getOrSyncMinuteBars(symbol)
     if (bars.length > 0) getCandleCache().set(symbol, 'minute', bars)
+    return bars
+  }
+
+  private async getFiveMinuteBars(symbol: string): Promise<BarInput[]> {
+    // L1: in-memory CandleCache — serve if fresh for the 5-minute period or the
+    // market is closed. Otherwise refetch so each new 5-min period creates its candle.
+    const cached = getCandleCache().get(symbol, '5min')
+    if (cached && (!isMarketSession(Date.now()) || isSeriesCurrent(cached, FIVE_MINUTE_MS))) return cached
+
+    // L2 → L3: real 5-minute series fetched from the API and persisted
+    const bars = await getOrSyncFiveMinuteBars(symbol)
+    if (bars.length > 0) getCandleCache().set(symbol, '5min', bars)
     return bars
   }
 
@@ -551,6 +786,13 @@ class ScannerEngine {
     }
   }
 
+  private broadcastRowRemoved(symbol: string): void {
+    const payload = { type: 'rowRemoved', symbol }
+    for (const writer of this.sseClients.values()) {
+      try { writer(payload) } catch { /* ignore disconnected clients */ }
+    }
+  }
+
   private broadcastStatus(status: string): void {
     const payload = { type: 'wsStatus', status }
     for (const writer of this.sseClients.values()) {
@@ -590,6 +832,14 @@ class ScannerEngine {
 // ── Intraday direction helper ─────────────────────────────────────────────────
 // Returns the direction of the last bar in an aggregated series.
 
+/** True when the latest bar in a series is within `periodMs` of now — i.e. the
+ *  series includes the current in-progress candle for that timeframe. */
+function isSeriesCurrent(bars: BarInput[], periodMs: number): boolean {
+  const last = bars[bars.length - 1]
+  if (!last) return false
+  return Date.now() - last.timestamp < periodMs
+}
+
 function intradayDir(bars: BarInput[]): MtfSignal {
   if (bars.length === 0) return 'up'
   const last = bars[bars.length - 1]!
@@ -598,7 +848,11 @@ function intradayDir(bars: BarInput[]): MtfSignal {
 
 // ── Criteria filter ────────────────────────────────────────────────────────────
 
-function filterSnapshot(tickers: SnapshotTicker[], criteria: ScanCriteria): SnapshotTicker[] {
+function filterSnapshot(
+  tickers: SnapshotTicker[],
+  criteria: ScanCriteria,
+  avgVol30Cache: Map<string, number>,
+): SnapshotTicker[] {
   return tickers.filter(t => {
     // Pre-market: day.c is 0 (no regular-session close yet).  Fall through to
     // prevDay.c so the snapshot is still usable before the open.
@@ -613,6 +867,16 @@ function filterSnapshot(tickers: SnapshotTicker[], criteria: ScanCriteria): Snap
     if (criteria.minChangePercent !== undefined && criteria.minChangePercent !== null && chg < criteria.minChangePercent) return false
     if (criteria.maxChangePercent !== undefined && criteria.maxChangePercent !== null && chg > criteria.maxChangePercent) return false
     if (criteria.minVolume !== undefined && criteria.minVolume !== null && vol < criteria.minVolume) return false
+    // Best-effort rvol pre-filter using a cached avgVol30 from a previous
+    // enrichment. Symbols we've never enriched are left for the authoritative
+    // post-enrichment filter, so we never drop a valid candidate prematurely.
+    if (criteria.minRvol !== undefined && criteria.minRvol !== null) {
+      const avg = avgVol30Cache.get(t.ticker)
+      if (avg && avg > 0) {
+        const rvol = computeRVOL(vol, avg)
+        if (rvol < criteria.minRvol) return false
+      }
+    }
 
     return true
   })

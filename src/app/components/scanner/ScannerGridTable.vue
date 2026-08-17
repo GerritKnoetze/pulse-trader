@@ -4,8 +4,12 @@ import {
   FunnelIcon,
   DocumentDuplicateIcon,
   XMarkIcon,
+  BoltIcon,
+  MinusCircleIcon,
+  WifiIcon,
+  ExclamationCircleIcon,
 } from '@heroicons/vue/24/outline'
-import { FunnelIcon as FunnelIconSolid } from '@heroicons/vue/24/solid'
+import { FunnelIcon as FunnelIconSolid, BoltIcon as BoltSolidIcon } from '@heroicons/vue/24/solid'
 import ScannerSetupChecklist from '~/components/scanner/ScannerSetupChecklist.vue'
 import type { StratSetup } from '~/types/scanner'
 
@@ -228,6 +232,28 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
             </template>
             <template v-else-if="col.key === 'ftfc'">
               <span v-if="row.ftfc" class="dot dot-amber" title="Full Time Frame Continuity" />
+            </template>
+            <template v-else-if="col.key === 'wsActive'">
+              <span class="icon-cell" :title="row.wsActive ? 'WS live' : 'WS off'">
+                <WifiIcon class="ws-icon" :class="row.wsActive ? 'ws-on' : 'ws-off'" />
+              </span>
+            </template>
+            <template v-else-if="col.key === 'enrichLevel'">
+              <span
+                class="icon-cell"
+                :title="row.enrichLevel === 'full'
+                  ? 'Fully enriched (daily + intraday)'
+                  : row.enrichLevel === 'daily'
+                    ? 'Enriched — daily bars only'
+                    : row.enrichLevel === 'error'
+                      ? 'Rate limited — data not fetched'
+                      : 'Not enriched (snapshot data)'"
+              >
+                <BoltSolidIcon v-if="row.enrichLevel === 'full'" class="enrich-icon enrich-full" />
+                <BoltIcon v-else-if="row.enrichLevel === 'daily'" class="enrich-icon enrich-daily" />
+                <ExclamationCircleIcon v-else-if="row.enrichLevel === 'error'" class="enrich-icon enrich-error" />
+                <MinusCircleIcon v-else class="enrich-icon enrich-none" />
+              </span>
             </template>
             <template v-else-if="col.key === 'mtf'">
               <span class="mtf-chips">
@@ -549,6 +575,27 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
 
 .dot-green { background: #22c55e; box-shadow: 0 0 4px rgba(34, 197, 94, 0.5); }
 .dot-amber { background: #f59e0b; box-shadow: 0 0 4px rgba(245, 158, 11, 0.4); }
+
+/* ── WS + enrichment icon columns ─────────────────────────── */
+.icon-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.ws-icon,
+.enrich-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ws-on         { color: #4ade80; }
+.ws-off        { color: #555; }
+.enrich-full   { color: #4ade80; }
+.enrich-daily  { color: #f59e0b; }
+.enrich-error  { color: #f23645; }
+.enrich-none   { color: #555; }
 
 .chg-pos { color: #42b883 !important; font-variant-numeric: tabular-nums; }
 .chg-neg { color: #ff6b6b !important; font-variant-numeric: tabular-nums; }
