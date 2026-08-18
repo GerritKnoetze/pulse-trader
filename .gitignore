@@ -24,4 +24,6 @@ logs
 !.env.example
 
 # Database
-data/
+# Anchored to the repo root so nested directories named `data` (e.g. the
+# Data Management UI under src/app/components/data) are still tracked.
+/data/

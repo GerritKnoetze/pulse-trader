@@ -248,6 +248,49 @@ class ScannerEngine {
 
   getCachedRows(): ScannerRow[] { return [...this.rowCache.values()] }
 
+  /** Drop the in-memory scanner row cache (rows re-enrich on the next scan). */
+  clearRowCache(): number {
+    const n = this.rowCache.size
+    this.rowCache.clear()
+    return n
+  }
+
+  /** View of the live intraday WS state for the data-management view. */
+  getIntradaySnapshot(): Array<{
+    symbol: string
+    lastPrice?: number
+    accVolume?: number
+    todayOpen?: number
+    prevDayClose?: number
+    dir1?: MtfSignal
+    dir5?: MtfSignal
+    dirD?: MtfSignal
+    dirW?: MtfSignal
+    dirM?: MtfSignal
+    dirQ?: MtfSignal
+    dirY?: MtfSignal
+  }> {
+    return [...this.intraday.entries()].map(([symbol, s]) => ({
+      symbol,
+      lastPrice: s.lastPrice,
+      accVolume: s.accVolume,
+      todayOpen: s.todayOpen,
+      prevDayClose: s.prevDayClose,
+      dir1: s['1'],
+      dir5: s['5'],
+      dirD: s['D'],
+      dirW: s['W'],
+      dirM: s['M'],
+      dirQ: s['Q'],
+      dirY: s['Y'],
+    }))
+  }
+
+  /** Current in-progress 10-second candle buckets (ephemeral, never persisted). */
+  getTenSecSnapshot(): BarInput[] {
+    return [...this.tenSec.values()]
+  }
+
   getActiveSetups(): StratSetup[] {
     return [...this.rowCache.values()]
       .filter(r => r.setup != null)

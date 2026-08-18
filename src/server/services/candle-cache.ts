@@ -22,6 +22,17 @@ interface Entry {
   expiresAt: number
 }
 
+export interface CandleCacheEntryInfo {
+  ticker: string
+  timespan: string
+  count: number
+  expiresAt: number
+  ttlRemainingMs: number
+  expired: boolean
+  firstTs: number | null
+  lastTs: number | null
+}
+
 class CandleCache {
   private store = new Map<string, Entry>()
 
@@ -75,7 +86,48 @@ class CandleCache {
     }
   }
 
+  /** Drop every entry (full L1 candle-cache flush). */
+  clear(): void { this.store.clear() }
+
   get size(): number { return this.store.size }
+
+  /** Total number of bars held across all cache entries. */
+  get totalBars(): number {
+    let total = 0
+    for (const entry of this.store.values()) total += entry.bars.length
+    return total
+  }
+
+  /**
+   * Inspect every entry (including expired ones) without mutating the cache.
+   * Used by the data-management view to show what's in memory right now.
+   */
+  inspect(): CandleCacheEntryInfo[] {
+    const now = Date.now()
+    const out: CandleCacheEntryInfo[] = []
+    for (const [key, entry] of this.store) {
+      const sep = key.lastIndexOf(':')
+      const ticker = key.slice(0, sep)
+      const timespan = key.slice(sep + 1)
+      out.push({
+        ticker,
+        timespan,
+        count: entry.bars.length,
+        expiresAt: entry.expiresAt,
+        ttlRemainingMs: Math.max(0, entry.expiresAt - now),
+        expired: now > entry.expiresAt,
+        firstTs: entry.bars[0]?.timestamp ?? null,
+        lastTs: entry.bars[entry.bars.length - 1]?.timestamp ?? null,
+      })
+    }
+    out.sort((a, b) => a.ticker.localeCompare(b.ticker) || a.timespan.localeCompare(b.timespan))
+    return out
+  }
+
+  /** Read the raw bar array for a key without expiry checks (for inspection/export). */
+  peek(ticker: string, timespan: string): BarInput[] | null {
+    return this.store.get(`${ticker}:${timespan}`)?.bars ?? null
+  }
 
   private evict(): void {
     const now = Date.now()

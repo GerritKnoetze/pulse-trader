@@ -148,6 +148,19 @@ class SnapshotCache {
 
   invalidate(): void { this.cache = null }
   get cachedAt(): number { return this.cache?.fetchedAt ?? 0 }
+
+  /** Non-mutating view of the snapshot cache state for the data-management view. */
+  info(): { tickerCount: number; fetchedAt: number | null; ttlMs: number; staleMs: number | null } {
+    const now = Date.now()
+    const ttl = sessionTtlMs()
+    if (!this.cache) return { tickerCount: 0, fetchedAt: null, ttlMs: ttl, staleMs: null }
+    return {
+      tickerCount: this.cache.tickers.length,
+      fetchedAt: this.cache.fetchedAt,
+      ttlMs: ttl,
+      staleMs: Math.max(0, now - this.cache.fetchedAt - ttl),
+    }
+  }
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {

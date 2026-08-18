@@ -4,6 +4,7 @@ import {
   Cog6ToothIcon,
   BookOpenIcon,
   MagnifyingGlassIcon,
+  CircleStackIcon,
 } from '@heroicons/vue/24/outline'
 
 defineProps<{
@@ -26,6 +27,12 @@ defineProps<{
             <MagnifyingGlassIcon class="icon-svg" />
           </span>
           <span v-show="!collapsed" class="label">Scanner</span>
+        </NuxtLink>
+        <NuxtLink to="/data" class="nav-item" :title="collapsed ? 'Data' : ''">
+          <span class="icon">
+            <CircleStackIcon class="icon-svg" />
+          </span>
+          <span v-show="!collapsed" class="label">Data</span>
         </NuxtLink>
       </div>
 

@@ -145,6 +145,18 @@ export class MarketDataRepository extends BaseRepository {
   }
 
   /**
+   * Lightweight timestamp-only scan of a series (for daily-batch grouping).
+   */
+  getTimestamps(ticker: string, timespan: string): number[] {
+    return this.executeQuery<{ Timestamp: number }>(
+      `SELECT Timestamp FROM MarketData
+       WHERE Ticker = @ticker AND Timespan = @timespan
+       ORDER BY Timestamp ASC`,
+      { ticker, timespan },
+    ).map(r => r.Timestamp);
+  }
+
+  /**
    * Delete bars older than a cutoff timestamp for a ticker/timespan.
    * Used to maintain rolling windows for intraday data.
    */
@@ -172,6 +184,112 @@ export class MarketDataRepository extends BaseRepository {
       { ticker },
     );
     return result.changes;
+  }
+
+  /**
+   * Delete a single bar by its primary key.
+   */
+  deleteById(id: string): number {
+    const result = this.executeRun('DELETE FROM MarketData WHERE Id = @id', { id });
+    return result.changes;
+  }
+
+  /**
+   * Delete a single bar by its natural key (ticker/timespan/timestamp).
+   */
+  deleteByKey(ticker: string, timespan: string, timestamp: number): number {
+    const result = this.executeRun(
+      'DELETE FROM MarketData WHERE Ticker = @ticker AND Timespan = @timespan AND Timestamp = @timestamp',
+      { ticker, timespan, timestamp },
+    );
+    return result.changes;
+  }
+
+  /**
+   * Fetch one bar by id.
+   */
+  getBarById(id: string): MarketDataRow | null {
+    const rows = this.executeQuery<MarketDataRow>(
+      'SELECT * FROM MarketData WHERE Id = @id',
+      { id },
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Update OHLCV + volume fields on an existing bar by id.
+   * Returns the number of rows changed (0 if the id doesn't exist).
+   */
+  updateBarById(
+    id: string,
+    fields: { open?: number; high?: number; low?: number; close?: number; volume?: number; transactions?: number | null },
+  ): number {
+    const sets: string[] = [];
+    const params: Record<string, unknown> = { id };
+    if (fields.open !== undefined) { sets.push('Open = @open'); params.open = fields.open; }
+    if (fields.high !== undefined) { sets.push('High = @high'); params.high = fields.high; }
+    if (fields.low !== undefined) { sets.push('Low = @low'); params.low = fields.low; }
+    if (fields.close !== undefined) { sets.push('Close = @close'); params.close = fields.close; }
+    if (fields.volume !== undefined) { sets.push('Volume = @volume'); params.volume = fields.volume; }
+    if (fields.transactions !== undefined) { sets.push('Transactions = @transactions'); params.transactions = fields.transactions; }
+    if (sets.length === 0) return 0;
+    const result = this.executeRun(
+      `UPDATE MarketData SET ${sets.join(', ')} WHERE Id = @id`,
+      params,
+    );
+    return result.changes;
+  }
+
+  /**
+   * Delete every market-data row (full DB flush).
+   */
+  deleteAll(): number {
+    const result = this.executeRun('DELETE FROM MarketData');
+    return result.changes;
+  }
+
+  /**
+   * Delete all sync-state rows (called together with a full DB flush).
+   */
+  deleteAllSyncStates(): number {
+    const result = this.executeRun('DELETE FROM MarketDataSyncState');
+    return result.changes;
+  }
+
+  /** Remove the sync-state row for a series. */
+  clearSyncState(ticker: string, timespan: string): void {
+    this.executeRun(
+      'DELETE FROM MarketDataSyncState WHERE Ticker = @ticker AND Timespan = @timespan',
+      { ticker, timespan },
+    );
+  }
+
+  /** All sync-state rows (every (ticker, timespan) the app tracks). */
+  getSyncStates(): SyncStateRow[] {
+    return this.executeQuery<SyncStateRow>(
+      `SELECT Ticker, Timespan, LatestTimestamp, LastSyncAt, GapStart, GapEnd, SyncError
+       FROM MarketDataSyncState
+       ORDER BY Ticker, Timespan`,
+    );
+  }
+
+  /** List of user tables with approximate row counts (from sqlite_master). */
+  getTableList(): { name: string; rows: number }[] {
+    const tables = this.executeQuery<{ name: string }>(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'migration%'
+       ORDER BY name`,
+    );
+    const db = this.connectionManager.getDatabase();
+    return tables.map(t => {
+      const safe = t.name.replace(/[^a-zA-Z0-9_]/g, '');
+      try {
+        const row = db.prepare(`SELECT COUNT(*) as cnt FROM "${safe}"`).get() as { cnt: number };
+        return { name: t.name, rows: row.cnt };
+      } catch {
+        return { name: t.name, rows: 0 };
+      }
+    });
   }
 
   // ── Sync state (MarketDataSyncState) ─────────────────────────────────────
