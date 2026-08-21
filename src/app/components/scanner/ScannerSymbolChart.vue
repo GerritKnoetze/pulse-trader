@@ -49,40 +49,6 @@ function panelIndex(key: Panel['key']): number {
 // ── State ─────────────────────────────────────────────────────────────────────
 const loading    = ref(false)
 const refreshing = ref(false)
-const dataSource = ref<'real' | 'demo'>('demo')
-
-// ── Seeded demo-data fallback ─────────────────────────────────────────────────
-function symbolSeed(sym: string, extra = 0): number {
-  return sym.split('').reduce((acc, c, i) => acc + c.charCodeAt(0) * (i + 1) * 31, 0) + extra
-}
-function seededRng(seed: number): () => number {
-  let s = Math.abs(seed) % 2_147_483_647 || 1
-  return () => { s = (s * 16807) % 2_147_483_647; return (s - 1) / 2_147_483_646 }
-}
-
-function generateOHLC(base: number, count: number, rng: () => number, volFactor: number): OHLCBar[] {
-  const endMs      = Date.now()
-  const intervalMs = 24 * 3600 * 1000
-  const closes: number[] = [base]
-  for (let i = 1; i < count; i++) {
-    const prev = closes[closes.length - 1]!
-    closes.push(Math.max(prev + (rng() - 0.51) * prev * volFactor, 1))
-  }
-  closes.reverse()
-  return closes.map((close, i) => {
-    const ts    = Math.floor((endMs - (count - 1 - i) * intervalMs) / 1000)
-    const open  = i === 0 ? close * (1 + (rng() - 0.5) * volFactor * 2) : closes[i - 1]!
-    const range = Math.abs(close - open)
-    const wick  = 0.3 + rng() * 0.7
-    return {
-      time:  ts,
-      open:  +open.toFixed(2),
-      high:  +(Math.max(open, close) + range * wick + 0.01).toFixed(2),
-      low:   +(Math.max(Math.min(open, close) - range * (0.2 + rng() * 0.5) - 0.01, 0.01)).toFixed(2),
-      close: +close.toFixed(2),
-    }
-  })
-}
 
 // ── Weekly bar aggregation (client-side, from patched daily bars) ─────────────
 // Mirrors the server's aggregateToWeekly logic but operates on OHLCBar[] (time
@@ -204,21 +170,15 @@ function todayBarFromRow(): OHLCBar | null {
 }
 
 // ── Build chart data ──────────────────────────────────────────────────────────
-const FALLBACK_COUNTS: Record<string, number> = { M: 36, W: 52, D: 100, '60': 80, '30': 80, '5': 80, '1': 60, '10s': 60 }
-const FALLBACK_VOL:    Record<string, number> = { M: 0.045, W: 0.028, D: 0.015, '60': 0.005, '30': 0.007, '5': 0.003, '1': 0.003, '10s': 0.002 }
-
 async function buildCharts(): Promise<void> {
   setTabLoading(props.symbol, true)
   loading.value = true
 
   let realBars: Record<string, OHLCBar[]> = {}
-  try { realBars = await fetchBars() } catch { /* fall back to seeded demo */ }
-
-  const hasReal = Object.keys(realBars).length > 0
-  dataSource.value = hasReal ? 'real' : 'demo'
+  try { realBars = await fetchBars() } catch { /* keep empty — background seed fills via SSE */ }
 
   // Patch today's partial D bar from the row's session `day` data so D shows today
-  if (hasReal && realBars['D']?.length) {
+  if (realBars['D']?.length) {
     const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
     const lastDTs  = realBars['D'][realBars['D'].length - 1]!.time
     if (lastDTs < todaySec) {
@@ -229,24 +189,13 @@ async function buildCharts(): Promise<void> {
 
   // Rebuild weekly bars from the patched daily bars so the current week
   // (and today's partial bar) is reflected correctly.
-  if (hasReal && realBars['D']?.length) {
+  if (realBars['D']?.length) {
     realBars['W'] = buildWeeklyBars(realBars['D'])
   }
 
   // Populate per-panel data BEFORE setting loading = false so charts mount with data
   PANELS.forEach((panel, idx) => {
-    let data: OHLCBar[]
-    if (panel.key === '10s') {
-      // 10s is live WS-derived — show the buffered bars or an empty panel (no demo).
-      data = (hasReal && realBars['10s']?.length) ? realBars['10s']! : []
-    } else if (hasReal && realBars[panel.key]?.length) {
-      data = realBars[panel.key]!
-    } else {
-      const rng   = seededRng(symbolSeed(props.symbol, idx * 7919))
-      const count = FALLBACK_COUNTS[panel.key] ?? 60
-      const vol   = FALLBACK_VOL[panel.key]   ?? 0.015
-      data = generateOHLC(props.basePrice, count, rng, vol)
-    }
+    const data = realBars[panel.key] ?? []
     panelBars[idx]!.value    = data
     panelMarkers[idx]!.value = computeMarkers(data)
   })
@@ -306,28 +255,30 @@ function applyToPanel(key: Panel['key'], bars: ApiBar[]): boolean {
   return changed
 }
 
-/** Merge newly-closed daily bars into the D panel history, then re-add today. */
+/** Merge newly-closed daily bars into the D panel history, then re-add today.
+ *  Handles a cold open too: when the panel is empty the incoming series is
+ *  adopted wholesale (the background seed pushes the full daily history). */
 function applyDayHistory(bars: ApiBar[]): void {
   const idxD = panelIndex('D')
   if (idxD === -1) return
-  const cur = panelBars[idxD]!.value
-  if (!cur.length) return
   const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
-  const merged = cur.filter(b => b.time < todaySec)
-  let changed = false
-  for (const b of bars) {
-    const t = Math.floor(b.t / 1000)
-    if (t >= todaySec) continue
-    const bar = { time: t, open: b.o, high: b.h, low: b.l, close: b.c }
-    const last = merged[merged.length - 1]
-    if (!last || t > last.time) { merged.push(bar); changed = true }
-    else if (t === last.time) { merged[merged.length - 1] = bar; changed = true }
-  }
-  if (changed) {
-    panelBars[idxD]!.value = merged
-    const todayBar = todayBarFromRow()
-    if (todayBar) panelBars[idxD]!.value = [...merged, todayBar]
-  }
+  const cur = panelBars[idxD]!.value
+  // Existing closed bars (excluding today's synthetic bar).
+  const base = cur.length ? cur.filter(b => b.time < todaySec) : []
+  // Incoming closed bars from the data layer (server never stores today).
+  const incoming = bars
+    .filter(b => Math.floor(b.t / 1000) < todaySec)
+    .map(b => ({ time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c }))
+  if (incoming.length === 0 && base.length === 0) return
+  // Union by timestamp — newer values replace equal timestamps.
+  const byTime = new Map<number, OHLCBar>()
+  for (const b of base) byTime.set(b.time, b)
+  for (const b of incoming) byTime.set(b.time, b)
+  const merged = [...byTime.values()].sort((a, b) => a.time - b.time)
+  const todayBar = todayBarFromRow()
+  const out = todayBar ? [...merged, todayBar] : merged
+  panelBars[idxD]!.value = out
+  panelMarkers[idxD]!.value = computeMarkers(out)
 }
 
 function applyBarsUpdate(msg: BarsEvent): void {
@@ -452,7 +403,7 @@ watch(() => props.symbol, buildCharts, { immediate: true })
         :time-visible="panel.timeVisible"
         :bars="panelBars[i]!.value"
         :markers="panelMarkers[i]!.value"
-        :is-demo="dataSource === 'demo'"
+        :is-demo="false"
       />
     </div>
   </div>

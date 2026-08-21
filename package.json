@@ -19,7 +19,12 @@
     "migrate:create": "npx tsx src/server/scripts/migrate.ts create",
     "migrate:validate": "npx tsx src/server/scripts/migrate.ts validate",
     "favicons": "node scripts/generate-favicons.mjs",
-    "migrate:reset": "npx tsx src/server/scripts/migrate.ts reset"
+    "migrate:reset": "npx tsx src/server/scripts/migrate.ts reset",
+    "test": "vitest run",
+    "test:chart": "vitest run tests/chart-updates.test.ts",
+    "test:data": "npx tsx scripts/data-layer-test.tsx",
+    "test:data:online": "npx tsx scripts/data-layer-test.tsx --online",
+    "test:data:live": "npx tsx scripts/data-layer-test.tsx --live"
   },
   "dependencies": {
     "@heroicons/vue": "^2.2.0",
@@ -33,8 +38,12 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/test-utils": "^2.4.11",
+    "happy-dom": "^20.11.2",
     "png-to-ico": "^3.0.1",
     "sharp": "^0.34.5",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "vitest": "^4.1.11"
   }
 }

@@ -6,7 +6,7 @@
  * 3. Sort candidates by |changePercent| DESC
  * 4. For the requested page: fetch/get-cached bars per ticker (L1→L2→L3)
  *    - Daily bars: permanent in SQLite, incremental delta from API
- *    - 1-min bars: rolling 5-trading-day window in SQLite, incremental delta
+ *    - 1-min bars: rolling intraday window in SQLite, incremental delta
  *    - W/M/Q/Y derived from daily; 5/15/30/60 derived from 1-min (in memory)
  * 5. Compute all TA fields (ATR, CC codes, pattern, signal, category, MTF, FTFC, inForce)
  * 6. Maintain in-memory row cache → powers SSE live-update fan-out
@@ -100,6 +100,10 @@ class ScannerEngine {
   // Symbols with an open chart tab. The data layer keeps these fresh on every
   // new period and pushes the new bars to charts as SSE events (no polling).
   private watchedSymbols = new Set<string>()
+
+  // Symbols with a one-shot chart backfill already in flight (dedup so repeated
+  // chart-bars calls for the same symbol never spawn concurrent seed fetches).
+  private seeding = new Set<string>()
 
   // Tickers of the current visible grid window — the live WS streams A+Q for
   // these (plus watched symbols). Replaced on every scan.
@@ -317,7 +321,9 @@ class ScannerEngine {
    */
   watchSymbol(symbol: string): void {
     this.watchedSymbols.add(symbol)
-    void this.refreshSymbolBars(symbol).catch(() => { /* non-critical */ })
+    // One-shot backfill right away (deduped by the seeding guard, so a
+    // concurrent chart-bars seed and this watch share a single fetch).
+    this.seedSymbolBars(symbol)
     // Subscribe the symbol on the live relay right away (not just on the next scan).
     if (this.lastVisibleTickers.length > 0) this.updateWsSubscriptions()
   }
@@ -374,6 +380,21 @@ class ScannerEngine {
 
     this.lastDailyDay.set(symbol, etDateString(Date.now()))
     return counts
+  }
+
+  /**
+   * One-shot background backfill for a chart symbol (used by chart-bars so a
+   * chart open NEVER blocks on the network). Refetches every period-elapsed /
+   * missing series (10s → minute → 5min → daily), updates cache/DB and pushes
+   * the bars to open SSE clients as `bars` events. Deduplicated per symbol;
+   * the period-elapse timer keeps watched symbols current afterwards.
+   */
+  seedSymbolBars(symbol: string): void {
+    if (this.seeding.has(symbol)) return
+    this.seeding.add(symbol)
+    void this.refreshSymbolBars(symbol)
+      .catch(() => { /* non-critical — a later refresh/scan will retry */ })
+      .finally(() => { this.seeding.delete(symbol) })
   }
 
   // ── Private: watched-symbol period refresh ───────────────────────────────

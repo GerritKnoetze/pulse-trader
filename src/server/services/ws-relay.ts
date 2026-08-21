@@ -198,6 +198,17 @@ class WsRelay {
   onStatus(id: string, handler: StatusHandler): void { this.statusHandlers.set(id, handler) }
   offStatus(id: string): void { this.statusHandlers.delete(id) }
 
+  /**
+   * Inject a synthetic tick into every registered handler without touching the
+   * socket. Test hook / utility — nothing in production calls this (it lets the
+   * live-pipeline be exercised deterministically with fabricated A/AM/T ticks).
+   */
+  emitTick(tick: MarketTick): void {
+    for (const handler of this.tickHandlers.values()) {
+      try { handler(tick) } catch { /* ignore handler errors */ }
+    }
+  }
+
   getStatus(): WsStatus { return this.status }
   getSubscriptionCount(): number { return this.subscriptions.size }
 

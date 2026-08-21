@@ -21,6 +21,19 @@ function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
   });
 }
 
+// Per-series in-flight lock: scan enrichment, chart seeds and period refreshes
+// can request the same (ticker, timespan) concurrently. This guarantees a
+// single coherent upstream fetch per series — the rest await the same result —
+// so the cache/DB are never written by interleaved partial fetches.
+const inflightSyncs = new Map<string, Promise<unknown>>();
+function dedupeSync<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const existing = inflightSyncs.get(key);
+  if (existing) return existing as Promise<T>;
+  const p = run().finally(() => { inflightSyncs.delete(key); });
+  inflightSyncs.set(key, p);
+  return p;
+}
+
 /** Thrown when Massive.com rejects a request with a rate-limit (429). */
 export class RateLimitError extends Error {
   constructor(ticker: string) {
@@ -160,6 +173,27 @@ function mapBar(ticker: string, timespan: string, bar: MassiveBar): BarInput {
 }
 
 /**
+ * Canonical app timespan for STORAGE, derived from the API (multiplier, timespan)
+ * pair. The app's persistable vocabulary is 'day' | 'minute' | '5min' | '10s';
+ * the API expresses 5-minute bars as (multiplier=5, timespan='minute') and
+ * 10-second bars as (multiplier=10, timespan='second'). Without this mapping the
+ * raw API timespan was stamped onto stored rows — 5-min bars landed in the
+ * 'minute' series (corrupting boundary bars via REPLACE) and 10s bars landed in
+ * 'second' (dropped by the persistable filter, so the 10s DB seed never worked).
+ * Any other pair maps to the raw timespan (derived/unsupported frames are
+ * filtered out by upsertBars).
+ */
+function toStoreTimespan(multiplier: number, timespan: string): string {
+  if (timespan === 'minute') {
+    if (multiplier === 1) return 'minute'
+    if (multiplier === 5) return '5min'
+    return timespan
+  }
+  if (timespan === 'second' && multiplier === 10) return '10s'
+  return timespan
+}
+
+/**
  * Fetch aggregate bars from Massive.com and cache them locally.
  * Follows pagination (next_url) to retrieve all bars in the date range.
  *
@@ -210,7 +244,8 @@ export async function fetchAggregates(
   }
 
   const firstResults = response?.results ?? response?.data?.results ?? [];
-  allBars.push(...firstResults.map((bar: MassiveBar) => mapBar(ticker, timespan, bar)));
+  const storeTs = toStoreTimespan(multiplier, timespan);
+  allBars.push(...firstResults.map((bar: MassiveBar) => mapBar(ticker, storeTs, bar)));
   claimedCount += response?.resultsCount ?? response?.data?.resultsCount ?? firstResults.length;
   nextUrl = response?.next_url ?? response?.data?.next_url;
 
@@ -244,7 +279,7 @@ export async function fetchAggregates(
       metrics.increment('restGaps');
       throw new Error(`Massive.com returned an empty page for ${ticker} — data may be incomplete`);
     }
-    allBars.push(...results.map((bar: MassiveBar) => mapBar(ticker, timespan, bar)));
+    allBars.push(...results.map((bar: MassiveBar) => mapBar(ticker, storeTs, bar)));
     claimedCount += data?.resultsCount ?? results.length;
     nextUrl = data?.next_url;
   }
@@ -273,12 +308,15 @@ export async function getAggregates(
   to: string,
 ): Promise<BarInput[]> {
   const repo = new MarketDataRepository();
+  // Storage uses the canonical app timespan (e.g. 5-min → '5min', 10s → '10s'),
+  // while the API may express it as (multiplier=5, 'minute') / (10, 'second').
+  const storeTs = toStoreTimespan(multiplier, timespan);
 
   // Convert date strings to timestamps for cache lookup
   const fromTs = new Date(from).getTime();
   const toTs = new Date(to).getTime();
 
-  const range = repo.getAvailableRange(ticker, timespan);
+  const range = repo.getAvailableRange(ticker, storeTs);
   const covers =
     range.count > 0
     && range.min !== null && range.min <= fromTs
@@ -290,7 +328,7 @@ export async function getAggregates(
     if (bars.length > 0) repo.upsertBars(bars);
   }
 
-  const rows = repo.getBars(ticker, timespan, fromTs, toTs);
+  const rows = repo.getBars(ticker, storeTs, fromTs, toTs);
   return rows.map(row => ({
     ticker: row.Ticker,
     timespan: row.Timespan,
@@ -390,8 +428,11 @@ function mapRowToBar(row: MarketDataRow): BarInput {
 // Calendar days to look back when doing a full daily history fetch (~400 trading days)
 const DAILY_LOOKBACK_CALENDAR_DAYS = 600;
 
-// Rolling window for 1-minute bars: 5 trading days ≈ 7 calendar days
-const MINUTE_WINDOW_CALENDAR_DAYS = 7;
+// Rolling window for intraday bars (1-minute and 5-minute). Sized for the
+// longest indicator the charts need: a 200 EMA on the 60-min panel requires
+// ~200 hourly bars ≈ 31 trading days ≈ 44 calendar days. 60 calendar days
+// (~42 trading days ≈ 273 hourly bars) gives that plus MACD warm-up margin.
+const INTRADAY_WINDOW_CALENDAR_DAYS = 60;
 
 // 10-second bars: look back ~70 minutes on a cold fetch (≈420 bars — enough to
 // seed a 200 EMA with context) and prune SQLite rows older than ~2 hours.
@@ -411,6 +452,7 @@ export const TEN_SEC_BUFFER = 450;
  * boundary never drifts near midnight.
  */
 export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
+  return dedupeSync(`${ticker}:day`, async () => {
   const repo = new MarketDataRepository();
 
   const toStr = yesterdayEt();
@@ -452,11 +494,12 @@ export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
   cutoff.setDate(cutoff.getDate() - DAILY_LOOKBACK_CALENDAR_DAYS);
   const rows = repo.getBars(ticker, 'day', cutoff.getTime(), Date.now());
   return rows.map(mapRowToBar);
+  });
 }
 
 /**
  * Three-layer 1-minute bar fetch with rolling window:
- *   L2 → SQLite (rolling 5-trading-day window, auto-pruned)
+ *   L2 → SQLite (rolling intraday window, auto-pruned)
  *   L3 → Massive.com API (full window on first fetch; delta thereafter)
  *
  * Stores all bars up to and including the current minute.
@@ -465,10 +508,11 @@ export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
  * sync never re-fetches the entire day containing the latest bar.
  */
 export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
+  return dedupeSync(`${ticker}:minute`, async () => {
   const repo = new MarketDataRepository();
 
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - MINUTE_WINDOW_CALENDAR_DAYS);
+  cutoff.setDate(cutoff.getDate() - INTRADAY_WINDOW_CALENDAR_DAYS);
   const cutoffMs = cutoff.getTime();
 
   // Prune expired bars first
@@ -479,7 +523,7 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
   try {
     if (latest === null || latest < cutoffMs) {
       // No data or all data expired: fetch full window (date precision is fine here)
-      const fromStr = daysAgoEt(MINUTE_WINDOW_CALENDAR_DAYS);
+      const fromStr = daysAgoEt(INTRADAY_WINDOW_CALENDAR_DAYS);
       const toStr = todayEt();
       const bars = await fetchAggregates(ticker, 1, 'minute', fromStr, toStr);
       if (bars.length > 0) {
@@ -511,6 +555,7 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
 
   const rows = repo.getBars(ticker, 'minute', cutoffMs, Date.now());
   return rows.map(mapRowToBar);
+  });
 }
 
 /**
@@ -520,10 +565,11 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
  * elapses. REPLACE keeps the in-progress bucket current.
  */
 export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[]> {
+  return dedupeSync(`${ticker}:5min`, async () => {
   const repo = new MarketDataRepository();
 
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - MINUTE_WINDOW_CALENDAR_DAYS);
+  cutoff.setDate(cutoff.getDate() - INTRADAY_WINDOW_CALENDAR_DAYS);
   const cutoffMs = cutoff.getTime();
 
   repo.pruneOlderThan(ticker, '5min', cutoffMs);
@@ -532,7 +578,7 @@ export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[
 
   try {
     if (latest === null || latest < cutoffMs) {
-      const fromStr = daysAgoEt(MINUTE_WINDOW_CALENDAR_DAYS);
+      const fromStr = daysAgoEt(INTRADAY_WINDOW_CALENDAR_DAYS);
       const toStr = todayEt();
       const bars = await fetchAggregates(ticker, 5, 'minute', fromStr, toStr);
       if (bars.length > 0) {
@@ -561,6 +607,7 @@ export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[
 
   const rows = repo.getBars(ticker, '5min', cutoffMs, Date.now());
   return rows.map(mapRowToBar);
+  });
 }
 
 /**
@@ -598,6 +645,7 @@ const lastTenSecSeedAt = new Map<string, number>()
 export interface TenSecondResult { bars: BarInput[]; seeded: boolean }
 
 export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondResult> {
+  return dedupeSync(`${ticker}:10s`, async () => {
   const repo = new MarketDataRepository();
   const now = Date.now();
   const fromMs = now - TEN_SEC_LOOKBACK_MS;
@@ -636,4 +684,5 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
   } catch { /* non-critical — live accumulation builds the series */ }
 
   return { bars: (cached && cached.length > 0) ? cached : fromDb, seeded: false };
+  });
 }
