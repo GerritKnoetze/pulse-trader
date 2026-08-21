@@ -6,8 +6,8 @@ import type { OHLCBar, BarMarker } from './PulseChart.vue'
 defineProps<{
   symbol:      string
   label:       string
-  title:       string
   timeVisible: boolean
+  showSeconds: boolean
   bars:        OHLCBar[]
   markers:     BarMarker[]
   isDemo:      boolean
@@ -19,7 +19,6 @@ defineProps<{
     <PulseChartHeader
       :symbol="symbol"
       :label="label"
-      :title="title"
       :is-demo="isDemo"
     />
     <PulseChart
@@ -27,6 +26,7 @@ defineProps<{
       :bars="bars"
       :markers="markers"
       :time-visible="timeVisible"
+      :show-seconds="showSeconds"
     />
   </div>
 </template>

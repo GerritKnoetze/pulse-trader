@@ -219,9 +219,18 @@ class ScannerEngine {
      for (const t of window) {
        const row = this.rowCache.get(t.ticker) ?? this.buildMinimalRow(t)
        if (row) {
-         // Refresh today's session daily bar from the fresh snapshot each scan.
+         // Keep the session daily bar accurate. For a CACHED row its high/low/
+         // close are already live (patched on every WS tick) — never clobber
+         // them with the (potentially stale) snapshot, which resets the D chart
+         // today-candle to the snapshot value on every scan. Only seed the
+         // regular-session open (the WS stream doesn't carry `o`) plus any
+         // fields still unset on a brand-new row.
          if (t.day && t.day.o > 0) {
-           row.day = { o: t.day.o, h: t.day.h, l: t.day.l, c: t.day.c }
+           row.day ??= { o: 0, h: 0, l: 0, c: 0 }
+           if (!row.day.o || row.day.o <= 0) row.day.o = t.day.o
+           if (!row.day.h) row.day.h = t.day.h || t.day.o
+           if (!row.day.l) row.day.l = t.day.l || t.day.o
+           if (!row.day.c) row.day.c = t.day.c || t.day.o
          }
          rows.push(row)
        }
@@ -673,8 +682,8 @@ class ScannerEngine {
         wsActive: this.isWsActive(ticker.ticker),
         day: {
           o: ticker.day.o,
-          h: ticker.day.h || Math.max(ticker.day.o, currentPrice),
-          l: ticker.day.l || Math.min(ticker.day.o, currentPrice),
+          h: ticker.day.h || Math.max(ticker.day.o || currentPrice, currentPrice),
+          l: ticker.day.l || Math.min(ticker.day.o || currentPrice, currentPrice),
           c: currentPrice,
         },
       }
@@ -737,8 +746,8 @@ class ScannerEngine {
       wsActive: this.isWsActive(ticker.ticker),
       day: {
         o: ticker.day.o,
-        h: ticker.day.h || Math.max(ticker.day.o, last),
-        l: ticker.day.l || Math.min(ticker.day.o, last),
+        h: ticker.day.h || Math.max(ticker.day.o || last, last),
+        l: ticker.day.l || Math.min(ticker.day.o || last, last),
         c: last,
       },
     }

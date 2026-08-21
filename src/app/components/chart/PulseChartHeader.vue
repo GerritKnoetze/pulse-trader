@@ -4,7 +4,6 @@ import { ref } from 'vue'
 const props = defineProps<{
   symbol:  string
   label:   string
-  title:   string
   isDemo:  boolean
 }>()
 
@@ -32,7 +31,6 @@ function copySymbol() {
         @click="copySymbol"
       >{{ copied ? '✓ Copied' : symbol }}</span>
       <span class="tf-chip">{{ label }}</span>
-      <span class="title">{{ title }}</span>
     </div>
     <span v-if="isDemo" class="demo-badge">DEMO</span>
   </div>
@@ -84,11 +82,6 @@ function copySymbol() {
   padding:        1px 6px;
   border-radius:  3px;
   letter-spacing: 0.03em;
-}
-
-.title {
-  color:     #4b5563;
-  font-size: 10px;
 }
 
 .demo-badge {

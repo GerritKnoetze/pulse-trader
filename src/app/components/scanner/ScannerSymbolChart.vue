@@ -26,15 +26,14 @@ const currentRow = computed(() => rows.value.find(r => r.symbol === props.symbol
 interface Panel {
   key:         'M' | 'W' | 'D' | '60' | '30' | '5' | '1' | '10s'
   label:       string
-  title:       string
   timeVisible: boolean
 }
 
 const PANELS: Panel[] = [
-  { key: 'D',   label: 'D',   title: 'Daily',    timeVisible: false },
-  { key: '5',   label: '5M',  title: '5-min',    timeVisible: true  },
-  { key: '1',   label: '1M',  title: '1-min',    timeVisible: true  },
-  { key: '10s', label: '10s', title: '10-sec',   timeVisible: true  },
+  { key: 'D',   label: 'D',   timeVisible: false },
+  { key: '5',   label: '5M',  timeVisible: true  },
+  { key: '1',   label: '1M',  timeVisible: true  },
+  { key: '10s', label: '10s', timeVisible: true  },
 ]
 
 // ── Per-panel reactive state ──────────────────────────────────────────────────
@@ -399,8 +398,8 @@ watch(() => props.symbol, buildCharts, { immediate: true })
         class="chart-cell"
         :symbol="symbol"
         :label="panel.label"
-        :title="panel.title"
         :time-visible="panel.timeVisible"
+        :show-seconds="panel.key === '10s'"
         :bars="panelBars[i]!.value"
         :markers="panelMarkers[i]!.value"
         :is-demo="false"

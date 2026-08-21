@@ -58,9 +58,11 @@ const props = withDefaults(defineProps<{
   bars:         OHLCBar[]
   markers?:     BarMarker[]
   timeVisible?: boolean
+  showSeconds?: boolean
 }>(), {
   markers:     () => [],
   timeVisible: false,
+  showSeconds: false,
 })
 
 // ── Crosshair sync ────────────────────────────────────────────────────────────
@@ -591,7 +593,7 @@ function drawUI(): void {
   const bar = props.bars[bi]
   if (!bar) return
 
-  const tLbl = fmtTimeFull(bar.time, props.timeVisible)
+  const tLbl = fmtTimeFull(bar.time, props.timeVisible, props.showSeconds)
   const tW   = c.measureText(tLbl).width + 14
   const tH   = 16
   const tX   = Math.max(0, Math.min(plW - tW, drawX - tW / 2))
@@ -1188,14 +1190,15 @@ function fmtTime(secs: number, intraday: boolean): string {
     : `${d.getMonth() + 1}/${d.getDate()}`
 }
 
-function fmtTimeFull(secs: number, intraday: boolean): string {
+function fmtTimeFull(secs: number, intraday: boolean, showSeconds: boolean): string {
   const d = new Date(secs * 1000)
   if (intraday) {
     const mo = (d.getMonth() + 1).toString().padStart(2, '0')
     const dy = d.getDate().toString().padStart(2, '0')
     const hh = d.getHours().toString().padStart(2, '0')
     const mm = d.getMinutes().toString().padStart(2, '0')
-    return `${mo}/${dy} ${hh}:${mm}`
+    const ss = showSeconds ? `:${d.getSeconds().toString().padStart(2, '0')}` : ''
+    return `${mo}/${dy} ${hh}:${mm}${ss}`
   }
   const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
   return `${M[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
