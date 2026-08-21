@@ -1,9 +1,7 @@
-import { randomUUID } from 'crypto';
 import { BaseRepository } from '../base-repository';
 import { getMetrics } from '../../services/metrics';
 
 export interface MarketDataRow {
-  Id: string;
   Ticker: string;
   Timespan: string;
   Timestamp: number;
@@ -55,16 +53,18 @@ export class MarketDataRepository extends BaseRepository {
     let inserted = 0;
 
     this.executeInTransaction((db) => {
+      // Natural-key primary key (Ticker, Timespan, Timestamp) — inserts are
+      // ordered per series, so bulk minute syncs stay fast (one index, no
+      // random-UUID page churn).
       const stmt = db.prepare(`
         INSERT OR ${onConflict} INTO MarketData
-          (Id, Ticker, Timespan, Timestamp, Open, High, Low, Close, Volume, Transactions, CreatedAt)
+          (Ticker, Timespan, Timestamp, Open, High, Low, Close, Volume, Transactions, CreatedAt)
         VALUES
-          (@id, @ticker, @timespan, @timestamp, @open, @high, @low, @close, @volume, @transactions, @createdAt)
+          (@ticker, @timespan, @timestamp, @open, @high, @low, @close, @volume, @transactions, @createdAt)
       `);
 
       for (const bar of persistable) {
         stmt.run({
-          id: randomUUID(),
           ticker: bar.ticker,
           timespan: bar.timespan,
           timestamp: bar.timestamp,
@@ -187,14 +187,6 @@ export class MarketDataRepository extends BaseRepository {
   }
 
   /**
-   * Delete a single bar by its primary key.
-   */
-  deleteById(id: string): number {
-    const result = this.executeRun('DELETE FROM MarketData WHERE Id = @id', { id });
-    return result.changes;
-  }
-
-  /**
    * Delete a single bar by its natural key (ticker/timespan/timestamp).
    */
   deleteByKey(ticker: string, timespan: string, timestamp: number): number {
@@ -206,26 +198,28 @@ export class MarketDataRepository extends BaseRepository {
   }
 
   /**
-   * Fetch one bar by id.
+   * Fetch one bar by its natural key (ticker/timespan/timestamp).
    */
-  getBarById(id: string): MarketDataRow | null {
+  getBarByKey(ticker: string, timespan: string, timestamp: number): MarketDataRow | null {
     const rows = this.executeQuery<MarketDataRow>(
-      'SELECT * FROM MarketData WHERE Id = @id',
-      { id },
+      'SELECT * FROM MarketData WHERE Ticker = @ticker AND Timespan = @timespan AND Timestamp = @timestamp',
+      { ticker, timespan, timestamp },
     );
     return rows[0] ?? null;
   }
 
   /**
-   * Update OHLCV + volume fields on an existing bar by id.
-   * Returns the number of rows changed (0 if the id doesn't exist).
+   * Update OHLCV + volume fields on an existing bar by natural key.
+   * Returns the number of rows changed (0 if the bar doesn't exist).
    */
-  updateBarById(
-    id: string,
+  updateBarByKey(
+    ticker: string,
+    timespan: string,
+    timestamp: number,
     fields: { open?: number; high?: number; low?: number; close?: number; volume?: number; transactions?: number | null },
   ): number {
     const sets: string[] = [];
-    const params: Record<string, unknown> = { id };
+    const params: Record<string, unknown> = { ticker, timespan, timestamp };
     if (fields.open !== undefined) { sets.push('Open = @open'); params.open = fields.open; }
     if (fields.high !== undefined) { sets.push('High = @high'); params.high = fields.high; }
     if (fields.low !== undefined) { sets.push('Low = @low'); params.low = fields.low; }
@@ -234,7 +228,8 @@ export class MarketDataRepository extends BaseRepository {
     if (fields.transactions !== undefined) { sets.push('Transactions = @transactions'); params.transactions = fields.transactions; }
     if (sets.length === 0) return 0;
     const result = this.executeRun(
-      `UPDATE MarketData SET ${sets.join(', ')} WHERE Id = @id`,
+      `UPDATE MarketData SET ${sets.join(', ')}
+       WHERE Ticker = @ticker AND Timespan = @timespan AND Timestamp = @timestamp`,
       params,
     );
     return result.changes;

@@ -221,7 +221,9 @@ export function getRows(
   const to = opts.to ?? Number.MAX_SAFE_INTEGER;
   const rows = repo.getBars(ticker, timespan, from, to);
   let out = rows.map(r => ({
-    id: r.Id,
+    // Deterministic id derived from the natural key (UI keying only — the DB
+    // primary key IS (Ticker, Timespan, Timestamp), no Id column exists).
+    id: `${r.Ticker}|${r.Timespan}|${r.Timestamp}`,
     ticker: r.Ticker,
     timespan: r.Timespan,
     timestamp: r.Timestamp,
@@ -245,38 +247,38 @@ export interface BarInputWithId extends BarInput {
 }
 
 /**
- * Insert (new timestamp) or update (existing id) a single bar.
+ * Insert (new timestamp) or update (existing natural key) a single bar.
  * The L1 cache is patched in lockstep so charts stay coherent.
+ * `input.id` is informational (derived natural key) — the DB is keyed by
+ * (ticker, timespan, timestamp), so the natural key is authoritative.
  */
 export function upsertBar(input: BarInputWithId): { ok: boolean; id: string | null; updated: boolean } {
   const repo = new MarketDataRepository();
+  const key = `${input.ticker}|${input.timespan}|${input.timestamp}`;
 
-  if (input.id) {
-    const existing = repo.getBarById(input.id);
-    // When the id no longer exists, fall through to an insert below.
-    if (existing) {
-      const changed = repo.updateBarById(input.id, {
+  const existing = repo.getBarByKey(input.ticker, input.timespan, input.timestamp);
+  if (existing) {
+    const changed = repo.updateBarByKey(input.ticker, input.timespan, input.timestamp, {
+      open: input.open,
+      high: input.high,
+      low: input.low,
+      close: input.close,
+      volume: input.volume,
+      transactions: input.transactions ?? null,
+    });
+    if (changed > 0) {
+      patchCacheBar({
+        ticker: input.ticker,
+        timespan: input.timespan,
+        timestamp: input.timestamp,
         open: input.open,
         high: input.high,
         low: input.low,
         close: input.close,
         volume: input.volume,
-        transactions: input.transactions ?? null,
+        transactions: input.transactions,
       });
-      if (changed > 0) {
-        patchCacheBar({
-          ticker: input.ticker,
-          timespan: input.timespan,
-          timestamp: existing.Timestamp,
-          open: input.open,
-          high: input.high,
-          low: input.low,
-          close: input.close,
-          volume: input.volume,
-          transactions: input.transactions,
-        });
-        return { ok: true, id: input.id, updated: true };
-      }
+      return { ok: true, id: key, updated: true };
     }
   }
 
@@ -294,34 +296,21 @@ export function upsertBar(input: BarInputWithId): { ok: boolean; id: string | nu
   };
   const inserted = repo.upsertBars([bar], 'REPLACE');
   patchCacheBar(bar);
-  const row = repo.getBars(bar.ticker, bar.timespan, bar.timestamp, bar.timestamp)[0];
-  return { ok: inserted > 0, id: row?.Id ?? null, updated: false };
+  return { ok: inserted > 0, id: key, updated: false };
 }
 
 export function deleteBar(input: { id?: string; ticker: string; timespan: string; timestamp?: number }): { ok: boolean; deleted: number } {
   const repo = new MarketDataRepository();
-  let deleted = 0;
-
-  if (input.id) {
-    const existing = repo.getBarById(input.id);
-    if (existing) {
-      deleted = repo.deleteById(input.id);
-      if (deleted > 0) {
-        removeCacheBar(existing.Ticker, existing.Timespan, existing.Timestamp);
-        return { ok: true, deleted };
-      }
-    }
-  }
 
   if (input.timestamp !== undefined) {
-    deleted = repo.deleteByKey(input.ticker, input.timespan, input.timestamp);
+    const deleted = repo.deleteByKey(input.ticker, input.timespan, input.timestamp);
     if (deleted > 0) {
       removeCacheBar(input.ticker, input.timespan, input.timestamp);
       return { ok: true, deleted };
     }
   }
 
-  return { ok: false, deleted };
+  return { ok: false, deleted: 0 };
 }
 
 export function deleteBatch(ticker: string, timespan: string, date: string): { ok: boolean; deleted: number } {
@@ -330,10 +319,8 @@ export function deleteBatch(ticker: string, timespan: string, date: string): { o
   const repo = new MarketDataRepository();
   let deleted = 0;
   for (const r of targets) {
-    if (r.id) {
-      deleted += repo.deleteById(r.id);
-      removeCacheBar(ticker, timespan, r.timestamp);
-    }
+    deleted += repo.deleteByKey(ticker, timespan, r.timestamp);
+    removeCacheBar(ticker, timespan, r.timestamp);
   }
   return { ok: true, deleted };
 }

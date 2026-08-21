@@ -80,6 +80,11 @@ class ScannerEngine {
   // Alert deduplication: key = `${symbol}-${signalTf}-${combo}`
   private alertsSent = new Set<string>()
 
+  // Alerts are DISABLED for now (2026-08-21) to reduce noise while the data
+  // layer is the focus. All alert code remains in place — flip `alertsEnabled`
+  // to `true` to re-enable setup-alert emission (SSE `setupAlert` frames).
+  private readonly alertsEnabled = false
+
   // Intraday data from WS (updated every tick)
   private intraday = new Map<string, IntradayState>()
 
@@ -133,12 +138,9 @@ class ScannerEngine {
   private progressiveActive = false
 
   constructor() {
-    // Wire WS tick handler — only when the live feed is enabled. With it off,
-    // the engine purely serves the scan/initial-load path (no WS ticks, no
-    // rowCache patch-and-broadcast, no reconnect activity).
-    if (useRuntimeConfig().public.liveFeedEnabled) {
-      getWsRelay().onTick('scanner-engine', (tick) => this.onTick(tick as AggregateTick))
-    }
+    // Wire the WS tick handler so live A/AM/T ticks patch rows + charts. The
+    // relay connects on demand on the first subscription request.
+    getWsRelay().onTick('scanner-engine', (tick) => this.onTick(tick as AggregateTick))
 
     // Log WS status changes and fan-out to SSE clients so the browser status
     // indicator accurately reflects the server-side WS relay state.
@@ -965,6 +967,8 @@ class ScannerEngine {
   }
 
   private maybeAlert(setup: StratSetup): void {
+    // Disabled for now — see `alertsEnabled` above.
+    if (!this.alertsEnabled) return
     // Only alert on high-quality setups
     if (setup.quality !== 'A+' && setup.quality !== 'A') return
     const key = `${setup.symbol}-${setup.signalTf}-${setup.combo}`
@@ -977,9 +981,6 @@ class ScannerEngine {
   // ── Private: WS subscription management ──────────────────────────────────
 
   private updateWsSubscriptions(): void {
-    // Live feed disabled → never subscribe (and therefore never trigger an
-    // on-demand WS connect). Scans still return rows from L1→L2→L3 only.
-    if (!useRuntimeConfig().public.liveFeedEnabled) return
     // Subscribe the A stream to exactly the visible grid rows plus any open
     // chart symbols. The relay diffs against the current set, so symbols that
     // fell out of the visible window are unsubscribed automatically.

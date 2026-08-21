@@ -136,11 +136,11 @@ against the `.output` chdir, `connection-manager.ts:16`).
 Tables present in the live DB: `MarketData`, `MarketDataSyncState`, `Settings`, `MigrationHistory`,
 `ResearchExperiment`, `ResearchProject`, `ResearchRun` (the last three are **orphaned** — see §15-G).
 
-**MarketData** (migration `20260326000000_create-market-data.ts`):
+**MarketData** (migration `20260326000000_create-market-data.ts`, **rebuilt by
+`20260821000000_rebuild-market-data-natural-key.ts` — 2026-08-21**):
 
 ```sql
 CREATE TABLE MarketData (
-  Id           TEXT PRIMARY KEY,
   Ticker       TEXT NOT NULL,
   Timespan     TEXT NOT NULL,    -- 'day' | 'minute' | '5min' | '10s'
   Timestamp    INTEGER NOT NULL, -- Unix ms
@@ -151,11 +151,16 @@ CREATE TABLE MarketData (
   Volume       INTEGER NOT NULL,
   Transactions INTEGER,
   CreatedAt    TEXT NOT NULL,
-  UNIQUE(Ticker, Timespan, Timestamp)
+  PRIMARY KEY (Ticker, Timespan, Timestamp)
 );
-CREATE INDEX idx_market_data_lookup ON MarketData(Ticker, Timespan, Timestamp);
-CREATE INDEX idx_market_data_ticker ON MarketData(Ticker);
 ```
+
+> **2026-08-21 rebuild (root-cause write-performance fix):** the table previously had a random-UUID `Id`
+> TEXT primary key + `UNIQUE(Ticker, Timespan, Timestamp)` + `idx_market_data_lookup` +
+> `idx_market_data_ticker` — three indexes on the same leading columns, all maintained per insert, with
+> random page churn. Cold 30-40k-bar minute syncs took ~15-20s and blew the 15s intraday timeout. The
+> rebuild made the **natural key the PRIMARY KEY** and removed the redundant constraint + both indexes:
+> one index to maintain, ordered inserts per series → cold syncs are now well under a second.
 
 **MarketDataSyncState** (migration `20260817000000_create-market-data-sync-state.ts`) — the per-
 `(ticker, timespan)` sync record (gap A resolved):
@@ -185,8 +190,9 @@ Key behaviors:
   landed in a `second` series that the persistable filter dropped (the 10s DB seed never worked). A
   repair script (`scripts/repair-polluted-minutes.tsx`) rewrote the affected minute series from source.
 - **Upsert strategy** (`market-data-repository.ts:46`): `INSERT OR REPLACE` for daily/5-min (overwrites
-  stale closes), `INSERT OR IGNORE` for 1-min/10-second (avoids double-insert). `Id` is a fresh
-  `randomUUID()` per insert. `data-manager` CRUD uses `REPLACE` on the natural key.
+  stale closes), `INSERT OR IGNORE` for 1-min/10-second (avoids double-insert). The primary key IS the
+  natural key `(Ticker, Timespan, Timestamp)` — no `Id` column. `data-manager` CRUD (upsert/delete by
+  natural key) exposes a derived `id` string only as a UI key.
 - **Timestamp semantics:** daily bars use session-midnight in UTC (`04:00 UTC` = 00:00 ET) — the ET-market
   day boundary. Intraday bars (minute/5-min/10s) use the bar-start timestamp (`tick.s` / bucket start).
 
@@ -226,7 +232,7 @@ Implications:
 - `MarketDataRepository` (`market-data-repository.ts`):
   - Bars: `upsertBars(bars, conflict='REPLACE')`, `getBars`, `getAvailableRange`, `getDataStatus`,
     `getTotalBars`, `getLatestTimestamp`, `getTimestamps`, `pruneOlderThan`, `deleteByTicker`,
-    `deleteById`, `deleteByKey`, `getBarById`, `updateBarById`, `deleteAll`.
+    `deleteByKey`, `getBarByKey`, `updateBarByKey`, `deleteAll`.
   - Sync state: `getSyncState`, `updateSyncState(latestTimestamp/gapStart/gapEnd/syncError)`,
     `clearGap`, `clearSyncState`, `deleteAllSyncStates`, `getSyncStates`.
   - Introspection: `getTableList` (for the Data Management view).
@@ -574,12 +580,11 @@ higher-TF directions without a snapshot lookup per tick. Note: **15/30/60 live d
 - `forceRefreshSymbol(symbol)` (`scanner-engine.ts:342`) bypasses the period-elapse gates, re-syncs
   minute/5min/day, and pushes the complete fresh series to the chart (`POST /api/scanner/chart-refresh`).
 
-### 6.5 Live Feed Gate
+### 6.5 Live Feed — Always On
 
-When `runtimeConfig.public.liveFeedEnabled` is false (default), the engine **does not register its WS tick
-handler** and `updateWsSubscriptions` returns immediately (no on-demand WS connect). Scans still return
-rows from L1→L2→L3 only. The SSE channel remains fully functional (it carries scan rows + wsStatus, not
-upstream market data).
+The live feed has **no master switch** — the engine always registers its WS tick handler and
+`updateWsSubscriptions` always subscribes the visible grid + watched chart symbols, connecting the relay
+on demand from the first scan onward. There is no environment flag to disable it.
 
 ---
 
@@ -589,7 +594,7 @@ upstream market data).
 
 The relay maintains **one persistent WebSocket connection** to `{wsUrl}/stocks` and distributes every
 inbound tick to registered handlers. It is decoupled from the scanner: the scanner registers
-`onTick('scanner-engine', …)` (only when the live feed is enabled) and `onStatus('scanner-engine-log', …)`.
+`onTick('scanner-engine', …)` at construction and `onStatus('scanner-engine-log', …)`.
 
 ### 7.1 Connection Lifecycle & Reconnect
 
@@ -679,7 +684,7 @@ updates. A 25 s named `ping` keeps the proxy connection alive.
 | `rowRemoved` | `{ symbol }` | When a row fails the authoritative minRvol filter and is dropped |
 | `bars` | `{ symbol, timespan, bars[] }` | Newly completed candles for watched chart symbols (10s/minute/5min/day deltas) |
 | `wsStatus` | `{ status }` | On relay state changes + on connect |
-| `setupAlert` | `{ setup: StratSetup }` | When an A+/A setup is first detected (`maybeAlert`) |
+| `setupAlert` | `{ setup: StratSetup }` | When an A+/A setup is first detected — **DISABLED** (server gate `alertsEnabled = false`, 2026-08-21); code retained |
 | `ping` | `'ping'` (named event) | Every 25 s — ignored by `EventSource.onmessage` |
 
 ### SSE client lifecycle
@@ -688,7 +693,7 @@ updates. A 25 s named `ping` keeps the proxy connection alive.
 EventSource connects → engine.addSseClient(id, write)
                      → push snapshot (current rowCache) + current wsStatus
 ... live updates stream via broadcastUpdate / broadcastRowRemoved / broadcastStatus /
-    broadcastSetupAlert / broadcastBars ...
+    broadcastSetupAlert (disabled) / broadcastBars ...
 EventSource closes → stream.onClosed → clear ping → engine.removeSseClient(id)
 ```
 
@@ -771,7 +776,6 @@ component on the page — a true singleton.
 | `mode` / `activeQuickFilter` / `sortKey` / `sortDir` | — | Grid view state (persisted) |
 | `wsStatus` | `'disconnected' \| 'connecting' \| 'connected' \| 'error'` | SSE (EventSource) state |
 | `serverWsStatus` | `WsStatus` | Server-side WS relay state (pushed via SSE) |
-| `latestSetupAlert` | `StratSetup \| null` | Most recent A+/A alert |
 
 | computed | Description |
 |---|---|
@@ -791,7 +795,7 @@ startAutoRefresh() → silent rescan on each minute boundary (only after an init
 
 **SSE wiring:** `connectLive()` opens `/api/scanner/subscribe`; `onmessage` applies `snapshot` (adopt if
 non-empty), merges `update` rows by symbol (upsert), removes `rowRemoved` symbols, tracks
-`serverWsStatus` / `latestSetupAlert`, and fans `bars` events out to chart subscribers via
+`serverWsStatus`, and fans `bars` events out to chart subscribers via
 `subscribeBars()`. `ScannerGrid.vue` on mount calls `initScanner()` + `connectLive()` +
 `startAutoRefresh()` — **no auto-scan on boot** (see appendix revisit note 2) — and disconnects on unmount.
 
@@ -818,8 +822,10 @@ non-empty), merges `update` rows by symbol (upsert), removes `rowRemoved` symbol
   bar — not 1-min aggregation), patches the live price into the last D/W bar on every SSE row update,
   and subscribes to SSE `bars` events (`subscribeBars`) for new-candle pushes (10s via live buckets,
   minute/5min/day via period refresh).
-- `useStratSetups.ts` derives live setups from `row.setup` on scanned rows and manages the alert drawer,
-  user-armed price alerts (watch `rows` until entry price crossed), toasts, and browser notifications.
+- `useStratSetups.ts` derives live setups from `row.setup` on scanned rows and powers the Setups drawer
+  (filter by quality, sort by R:R / ATR risk, checklist). The alerts system (drawer, armed price alerts,
+  setupAlert SSE) is **DISABLED** (2026-08-21): the server's `maybeAlert` is gated by `alertsEnabled =
+  false`, so no `setupAlert` frames fire — but all alert code is retained for re-enable.
 - `useChartTabs.ts` / `useChartSync.ts` manage multi-tab charts and cross-chart cursor sync.
 - **Data Management view** (`/data`, `src/app/composables/useDataManager.ts`) provides L1/L2/L3 oversight:
   overview, cache inspection, DB series → ET-day batch drill → row CRUD, cache refresh/flush, DB flush,
@@ -896,7 +902,7 @@ price). During enrichment the engine builds `todaySnap` from `ticker.day.o` + mo
 │  • Inflight dedup + 30s t/o  │  │  • on-demand connect on 1st subscribe  │
 │                             │  └──────────────────┬─────────────────────┘
 │  CandleCache (2000 entries) │                     │ onTick('scanner-engine', …)
-│  • key ticker:timespan      │                     ▼  (liveFeedEnabled only)
+│  • key ticker:timespan      │                     ▼  (always wired)
 │  • 10s→5m · 5min→6h · min→6h│  ┌────────────────────────────────────────┐
 │  • hour→1h · day/W/M→24h    │  │  ScannerEngine (globalThis.__scannerEngine)│
 │  • appendBar() on AM ticks  │  │                                         │
@@ -928,10 +934,10 @@ price). During enrichment the engine builds `todaySnap` from `ticker.day.o` + mo
                                  │  4. patch rowCache row                 │
                                  │  5. broadcastUpdate → SSE              │
                                  └──────────────────┬─────────────────────┘
-                                                    │ SSE frames
-                                                    │ (snapshot/update/rowRemoved/
-                                                    │  bars/wsStatus/setupAlert)
-                                                    ▼
+                                                     │ SSE frames
+                                                     │ (snapshot/update/rowRemoved/
+                                                     │  bars/wsStatus)
+                                                     ▼
 ┌───────────────────────────────────────────────────────────────────────-─┐
 │  BROWSER (Vue 3 / Nuxt)                                                 │
 │                                                                         │
@@ -940,7 +946,6 @@ price). During enrichment the engine builds `todaySnap` from `ticker.day.o` + mo
 │  useScanner (module singleton)                                          │
 │  • rows ← snapshot / per-row update merge / rowRemoved                  │
 │  • serverWsStatus ← wsStatus frames                                     │
-│  • latestSetupAlert ← setupAlert frames                                 │
 │  • bars → subscribeBars() → open charts                                 │
 │  filteredRows (computed) → ScannerGridTable                             │
 │  ScannerSymbolChart → GET /api/scanner/chart-bars (D/W/M/1/5/10s/60/30) │
@@ -1001,7 +1006,6 @@ flowchart TD
             IS[("intraday\nMap‹sym, IntradayState›\nlastPrice · accVol\ntodayOpen · prevDayClose")]
             TEN[("tenSec\nMap‹sym, BarInput›\nephemeral 10s buckets")]
             SSE_REG[("sseClients\nMap‹id, SseWriter›")]
-            ALERTS[("alertsSent\nSet‹string›")]
         end
 
         subgraph TA["ta-calculator (pure)"]
@@ -1014,14 +1018,14 @@ flowchart TD
         end
 
         subgraph SSE_EP["/api/scanner/subscribe"]
-            SSE_H["createEventStream()\n25 s ping · snapshot on connect\nsnapshot · update · rowRemoved\nbars · wsStatus · setupAlert"]
+            SSE_H["createEventStream()\n25 s ping · snapshot on connect\nsnapshot · update · rowRemoved\nbars · wsStatus"]
         end
     end
 
     subgraph BRW["🖥 Browser — Vue 3 / Nuxt"]
         LS[("localStorage\ncriteria · scanner-state\ngrid columns · layouts")]
         USC["useScanCriteria"]
-        USS["useScanner\nrows · serverWsStatus\nlatestSetupAlert · filteredRows\nsubscribeBars"]
+        USS["useScanner\nrows · serverWsStatus\nfilteredRows · subscribeBars"]
         ESRC["EventSource /api/scanner/subscribe"]
         GRID["ScannerGridTable"]
         CHART["ScannerSymbolChart\nchart-bars D/W/M/1/5/10s/60/30\n+ client today-bar (row.day)\n+ SSE bars events"]
@@ -1081,15 +1085,13 @@ flowchart TD
     TICK -->|patch row| RC
     TICK -->|broadcastUpdate| SSE_REG
     TICK -->|broadcastStatus| SSE_REG
-    TICK -->|maybeAlert A+/A| ALERTS
-    ALERTS -->|setupAlert| SSE_REG
     WATCH -->|broadcastBars| SSE_REG
 
     SSE_REG --> SSE_H
     RC -->|initial snapshot on connect| SSE_H
     SSE_H <-->|EventSource| ESRC
 
-    ESRC -->|snapshot · update · rowRemoved\nwsStatus · setupAlert| USS
+    ESRC -->|snapshot · update · rowRemoved\nwsStatus| USS
     ESRC -->|bars| USS
     USC <-->|persist/load| LS
     USS <-->|persist/load| LS
@@ -1251,12 +1253,6 @@ sequenceDiagram
     SSE-->>SC: { type:'update', row }
     SC-->>User: Grid row updates (incl. MTF chips)
 
-    Note over SE: A+/A setup first detected during enrichment
-    SE->>SSE: broadcastSetupAlert(setup)
-    SSE-->>SC: { type:'setupAlert', setup }
-    SC->>SC: latestSetupAlert.value = setup
-    SC-->>User: Alert drawer fires
-
     Note over SE: chart watch — period-elapse refresh pushes new candles
     SE->>SSE: broadcastBars(symbol, timespan, fresh)
     SSE-->>SC: { type:'bars', symbol, timespan, bars }
@@ -1271,7 +1267,7 @@ sequenceDiagram
     participant WS as WsRelay
     participant MassWS as Massive.com WS ({wsUrl}/stocks)
 
-    Note over SE,WS: only when liveFeedEnabled (else no onTick, no subscriptions)
+    Note over SE,WS: the live feed is always on — onTick is wired at construction
     SE->>WS: onTick(handler) + onStatus(handler)
     SE->>WS: updateSubscriptions([A.SYM,...]) on first scan / watch
     WS->>WS: connect() (on-demand)
@@ -1326,8 +1322,8 @@ read/refresh paths remains the end goal.
 - **Evidence:** AAPL holds **193,072 minute bars (~2 years)**; the DB is ~535 MB. Daily bars older than
   the 600-day lookback are also never deleted.
 
-**Target:** deterministic retention — prune-on-write for every minute-bar insert + a scheduled/pruned
-background job; decide whether daily history should be capped or archived.
+**DECIDED (2026-08-21):** no automatic retention job — pruning is **manual** via the Data Management
+view (`/data`, series → batch → delete / flush). The operator trims the DB as needed.
 
 ### C. Minute delta fetch precision — RESOLVED (2026-08-17)
 
@@ -1354,7 +1350,8 @@ pending `next_url`, or a short-fall vs `resultsCount` — partial results are ne
   longer updated). Remaining per-AM work is O(1) (1-min append + 5-min cache dir) plus
   `computeMtfState` over the daily series (small) for D/W/M/Q/Y.
 
-**Target:** SSE diffing + throttling, and push backpressure handling.
+**DECIDED (2026-08-21):** no SSE throttle, diffing, or backpressure handling is planned — this is a
+**single-user local app**, SSE must always deliver the live & latest tick as fast as it arrives.
 
 ### G. Migration & settings drift
 
@@ -1367,16 +1364,17 @@ pending `next_url`, or a short-fall vs `resultsCount` — partial results are ne
 
 **Target:** reconcile history (add a down-migration / squash), remove orphan tables, align settings keys.
 
-### H. rowCache & alertsSent grow forever
+### H. rowCache & auxiliary maps grow forever
 
 - `rowCache` never expires — a symbol scanned once stays stale until the next scan touches it
   (`scanner-engine.ts:75`).
-- `alertsSent` (`scanner-engine.ts:81`) accumulates across the server lifetime (unbounded memory).
-- (New) `enrichedSymbols`, `rejectedSymbols`, `avgVol30Cache`, `lastSentBar`, `lastDailyDay` also grow
-  with distinct symbols across the server lifetime.
+- `enrichedSymbols`, `rejectedSymbols`, `avgVol30Cache`, `lastSentBar`, `lastDailyDay` grow with distinct
+  symbols across the server lifetime.
+- `alertsSent` still grows too, but since `alertsEnabled = false` (alerts disabled 2026-08-21) it never
+  gets new entries while the gate is off — re-enabling alerts should pair with a cap/prune.
 
-**Target:** rowCache TTL / generation-based invalidation on criteria change; cap/prune `alertsSent` and
-the auxiliary symbol maps.
+**Target:** rowCache TTL / generation-based invalidation on criteria change; cap/prune the auxiliary
+symbol maps.
 
 ### I. wsUrl default inconsistency
 
@@ -1447,13 +1445,12 @@ contracts to preserve.
    scans. Revisit: decide whether an auto-rescan on SSE reconnect / app resume should be reintroduced
    once live trading starts.
 
-3. **Live feed temporarily disabled (2026-08-17).** While the data layer is being refactored
-   step-by-step, the upstream live pipeline is switched off so only the initial load/scan path runs.
-   Controlled by `runtimeConfig.public.liveFeedEnabled` (set `LIVE_FEED_ENABLED=true` to re-enable).
-   Server-side gates: `scanner-engine.ts` constructor (WS tick handler not registered) and
-   `updateWsSubscriptions` (never subscribes → no on-demand WS connect). The client SSE channel was
-   **re-enabled** for the two-phase scan (it carries scan rows + wsStatus, not upstream market data).
-   Revisit: re-enable and validate reconnect gap-repair + tick accuracy before live trading.
+3. **Live feed is now always on (2026-08-21).** The `runtimeConfig.public.liveFeedEnabled` switch was
+   **removed** — the WS tick handler is always wired and `updateWsSubscriptions` always subscribes
+   (relay connects on demand). The `.env` `LIVE_FEED_ENABLED` flag is ignored. Alerts (setupAlert SSE,
+   alert drawer, armed price alerts) are **disabled** (server gate `alertsEnabled = false`) to reduce
+   noise while the data layer is the focus — the code is retained and re-enablable. Revisit: validate
+   reconnect gap-repair + tick accuracy against the real feed.
 
 4. **Trading methodology is expanding beyond The Strat.** Pulse Trader's scanner logic was built
    around The Strat (CC codes, patterns, setups). The strategy is now a hybrid of The Strat + Ross
@@ -1490,8 +1487,8 @@ Implemented so far (verified — build passes, migrations `20260817000000` appli
 | — | Data Management UI | `/data` view + `/api/data-manager/*`: L1/L2/L3 overview, cache inspect/flush, DB series/batch/row CRUD, L3 download, metrics |
 
 **Not yet done (next steps):** retention enforcement on the WS write path (B), rate-limit-aware
-concurrency, `syncMarketData` concurrency, live-feed reconnect gap repair (deferred until the feed is
-re-enabled), SSE throttling/diffing, rowCache/alertsSent expiry (H), reconcile migration history (G).
+concurrency, `syncMarketData` concurrency, live-feed reconnect gap repair, SSE throttling/diffing,
+rowCache expiry (H), reconcile migration history (G).
 
 ---
 
@@ -1507,6 +1504,8 @@ re-enabled), SSE throttling/diffing, rowCache/alertsSent expiry (H), reconcile m
 | D-panel cold-open fix | `applyDayHistory` now adopts the full daily seed when the D panel starts empty (previously the first full-history broadcast was dropped) |
 | Test harness | `scripts/data-layer-test.tsx` — self-contained, run with `npx tsx`; offline suite by default, `--online` for REST L1→L2→L3 paths, `--live` for the real WS relay; uses a throwaway temp SQLite DB |
 | Live-pipeline → SSE coverage | New section 10: constructs the engine with the live tick handler wired, registers a mock SSE client, then injects synthetic `A`/`AM` ticks via `WsRelay.emitTick()` and asserts 10s bucket `bars` frames, tick-patched `update` frames (`row.ts`/`row.last`), and AM → CandleCache + SQLite persistence |
+| Live feed e2e (real socket) | Section 11 (2026-08-21): **end-to-end against the real socket** — connect → auth → subscribe → real ticks arrive → engine `intraday.lastPrice` changes. Run `npx tsx scripts/data-layer-test.tsx --online --live`. The most important verification: the live feed works against the real feed. |
 | Client chart tests | `tests/chart-updates.test.ts` (vitest + happy-dom, `npm run test:chart`): panel population from chart-bars, SSE `bars` append/replace, full daily-seed adopt on cold open, foreign-symbol filtering, forming-candle patch + D today-bar from the live row |
 | Timespan-stamping fix | `toStoreTimespan()` maps API `(5, minute)`→`5min` and `(10, second)`→`10s` so 5-min/10s bars store under the canonical timespan (was: stamped as `minute`/`second`, corrupting minute boundary bars and silently breaking the 10s seed) |
+| Natural-key PK rebuild (2026-08-21) | Migration `20260821000000` rebuilds `MarketData` with `PRIMARY KEY (Ticker, Timespan, Timestamp)` — drops the random-UUID `Id`, the redundant `UNIQUE` constraint and both redundant indexes. Root-cause fix for the "intraday fetch timeout (15 s)" cold-sync warnings: bulk minute writes dropped from ~15-20s to <1s. Repository CRUD switched to `getBarByKey`/`updateBarByKey`/`deleteByKey`; data-manager exposes a derived `id` string for the UI. |
 | Data repair | `scripts/repair-polluted-minutes.tsx` rewrote the minute series from source for all 84 tickers that had 5-min data (6,973 bug-stamped rows removed); verified zero remaining real pollution |

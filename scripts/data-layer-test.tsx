@@ -43,12 +43,12 @@ const TEST_DB_PATH = useRealDb || dbArg
 
 process.env.DB_PATH = TEST_DB_PATH
 
-// scanner-engine calls the Nitro auto-import useRuntimeConfig() at construction
-// time — polyfill it (mutable) so the engine can be exercised standalone and so
-// the live-pipeline section can construct an engine WITH the tick handler wired.
-const runtimeCfg = { liveFeedEnabled: false }
+// Nitro auto-imports useRuntimeConfig() — the engine used to gate the live feed
+// on it; the feed is now always on. The polyfill is kept because
+// connection-manager optionally reads dbPath from it (guarded) and it keeps the
+// harness standalone.
 ;(globalThis as unknown as Record<string, unknown>).useRuntimeConfig = () => ({
-  public: { liveFeedEnabled: runtimeCfg.liveFeedEnabled },
+  public: {},
 })
 
 // ── Test harness ───────────────────────────────────────────────────────────────
@@ -135,6 +135,7 @@ async function main(): Promise<void> {
     (await import('../src/server/database/migrations/20260323000000_create-settings')).default,
     (await import('../src/server/database/migrations/20260323100000_seed-default-settings')).default,
     (await import('../src/server/database/migrations/20260326000000_create-market-data')).default,
+    (await import('../src/server/database/migrations/20260821000000_rebuild-market-data-natural-key')).default,
     (await import('../src/server/database/migrations/20260817000000_create-market-data-sync-state')).default,
     (await import('../src/server/database/migrations/20260327100000_seed-llm-settings')).default,
   ]
@@ -183,11 +184,15 @@ async function main(): Promise<void> {
       assert(tables.includes(t), `missing table ${t} (have ${tables.join(',')})`)
     }
   })
-  await test('MarketData UNIQUE + indexes present', () => {
+  await test('MarketData natural-key PRIMARY KEY (no redundant indexes)', () => {
     const idx = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='MarketData'")
       .all() as { name: string }[]).map(i => i.name)
-    assert(idx.includes('idx_market_data_lookup'), 'missing lookup index')
-    assert(idx.includes('idx_market_data_ticker'), 'missing ticker index')
+    assert(!idx.includes('idx_market_data_lookup'), 'redundant lookup index must be gone')
+    assert(!idx.includes('idx_market_data_ticker'), 'redundant ticker index must be gone')
+    const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='MarketData'").get() as { sql: string }).sql
+    assert(sql.includes('PRIMARY KEY (Ticker, Timespan, Timestamp)'), `composite PK missing: ${sql}`)
+    assert(!sql.includes('Id '), `Id column must be gone: ${sql}`)
+    assert(!sql.includes('UNIQUE('), `redundant UNIQUE constraint must be gone: ${sql}`)
   })
   await test('settings seeded with defaults', () => {
     const r = new SettingsRepository()
@@ -387,17 +392,16 @@ async function main(): Promise<void> {
     assert(removed === 1, `expected 1 pruned, got ${removed}`)
     assert(repo.getBars('L2T6', 'minute', 0, 10_000).length === 2, 'remaining rows')
   })
-  await test('row CRUD (getBarById / updateBarById / deleteById / deleteByKey)', () => {
+  await test('row CRUD (getBarByKey / updateBarByKey / deleteByKey)', () => {
     repo.deleteByTicker('L2T7')
     repo.upsertBars([bar('L2T7', 'day', 100)], 'REPLACE')
-    const id = repo.getBars('L2T7', 'day', 0, 10_000)[0]!.Id
-    const fetched = repo.getBarById(id)
-    assert(fetched?.Ticker === 'L2T7', 'getBarById')
-    repo.updateBarById(id, { close: 55 })
-    assert(repo.getBarById(id)!.Close === 55, 'updateBarById')
-    assert(repo.deleteById(id) === 1, 'deleteById')
+    const fetched = repo.getBarByKey('L2T7', 'day', 100)
+    assert(fetched?.Ticker === 'L2T7', 'getBarByKey')
+    repo.updateBarByKey('L2T7', 'day', 100, { close: 55 })
+    assert(repo.getBarByKey('L2T7', 'day', 100)!.Close === 55, 'updateBarByKey')
+    assert(repo.deleteByKey('L2T7', 'day', 100) === 1, 'deleteByKey')
     repo.upsertBars([bar('L2T7', 'day', 200)], 'REPLACE')
-    assert(repo.deleteByKey('L2T7', 'day', 200) === 1, 'deleteByKey')
+    assert(repo.deleteByKey('L2T7', 'day', 200) === 1, 'deleteByKey #2')
   })
   await test('getDataStatus / getTotalBars / getTimestamps', () => {
     repo.deleteByTicker('L2T8')
@@ -550,7 +554,10 @@ async function main(): Promise<void> {
     // Regression: 5-min bars must be stored under '5min' (not stamped as
     // 'minute' like the raw API timespan) and must NOT touch the minute series.
     const stored = repo.getBars('AAPL', '5min', 0, Number.MAX_SAFE_INTEGER)
-    assert(stored.length === bars.length, `stored 5min rows ${stored.length} != fetched ${bars.length}`)
+    // The fetch window is ET-calendar (`daysAgoEt(60)` = midnight 60 days ago),
+    // which can extend ~24h BEFORE the ms-based read cutoff — so the DB may hold
+    // a few more bars than the read-window return. Invariant: stored ≥ fetched.
+    assert(stored.length >= bars.length, `stored 5min rows ${stored.length} < fetched ${bars.length}`)
     assert(repo.getBars('AAPL', 'minute', 0, Number.MAX_SAFE_INTEGER).length === minuteBefore,
       '5-min sync must not alter the minute series')
     assert(repo.getSyncState('AAPL', '5min')!.LatestTimestamp > 0, '5min sync-state missing')
@@ -577,25 +584,34 @@ async function main(): Promise<void> {
   } : () => { console.log('  · skipped (pass --online)') })
 
   await test('scanner-engine minimal scan (two-phase shape)', online ? async () => {
-    const engine = getScannerEngine()
-    const page = await engine.scan({}, 3)
-    assert(page.total >= 0, 'scan total')
-    assert(Array.isArray(page.rows), 'rows must be an array')
-    assert(typeof page.universeCount === 'number' && page.universeCount > 1000, 'universeCount too small')
-    assert('lastScan' in page && page.nextCursor !== undefined, 'ScanPage shape')
+    // The engine now always subscribes to the WS relay on scan — stub the relay
+    // so this REST-only section never triggers a real WS connect.
+    const relay = getWsRelay()
+    const realUpdateSubs = relay.updateSubscriptions.bind(relay)
+    relay.updateSubscriptions = () => {}
+    try {
+      const engine = getScannerEngine()
+      const page = await engine.scan({}, 3)
+      assert(page.total >= 0, 'scan total')
+      assert(Array.isArray(page.rows), 'rows must be an array')
+      assert(typeof page.universeCount === 'number' && page.universeCount > 1000, 'universeCount too small')
+      assert('lastScan' in page && page.nextCursor !== undefined, 'ScanPage shape')
+    } finally {
+      relay.updateSubscriptions = realUpdateSubs
+    }
   } : () => { console.log('  · skipped (pass --online)') })
 
   // ── 10. Live pipeline → SSE fan-out (synthetic ticks) ─────────────────────────
   section('10. Live pipeline → SSE fan-out (synthetic ticks)')
   await test('engine onTick → 10s buckets → SSE bars · row patch → SSE update · AM persist', online ? async () => {
-    // Fresh engine WITH the live tick handler wired (feed flag on at construction),
-    // then flip it back off so scan/watchSymbol never trigger a real WS connect.
-    runtimeCfg.liveFeedEnabled = true
+    // The tick handler is always wired now. Stub the relay's updateSubscriptions
+    // so scan/watchSymbol never trigger a real WS connect during this test.
+    const relay = getWsRelay()
+    const realUpdateSubs = relay.updateSubscriptions.bind(relay)
+    relay.updateSubscriptions = () => {}
+
     delete (globalThis as unknown as { __scannerEngine?: unknown }).__scannerEngine
     const engine = getScannerEngine()
-    runtimeCfg.liveFeedEnabled = false
-
-    const relay = getWsRelay()
     const frames: unknown[] = []
     engine.addSseClient('test-sse', (d) => frames.push(d))
     try {
@@ -640,35 +656,94 @@ async function main(): Promise<void> {
       assert(storedMinute.length === 1 && storedMinute[0]!.Close === 101.5, 'AM bar not persisted to SQLite')
     } finally {
       engine.removeSseClient('test-sse')
-      runtimeCfg.liveFeedEnabled = false
+      relay.updateSubscriptions = realUpdateSubs
     }
   } : () => { console.log('  · skipped (pass --online)') })
 
-  // ── 11. Live WS relay (--live) ────────────────────────────────────────────────
-  section('11. Live WebSocket relay')
-  await test('connect → auth → subscribe → receive a tick', live ? async () => {
+  // ── 11. Live WS relay — END-TO-END against the real socket (--live) ──────────
+  // THE most important verification: the live feed actually works end-to-end
+  // against the real socket, which is the most important thing given our
+  // priorities. Full chain: real socket connect → auth → subscribe → real ticks
+  // arrive → ticks reach the scanner engine (intraday lastPrice patched).
+  // Run with:  npx tsx scripts/data-layer-test.tsx --online --live
+  section('11. Live WebSocket relay — end-to-end (real socket)')
+  await test('connect → auth → subscribe → engine receives real ticks', live ? async () => {
     const relay = getWsRelay()
-    let ticks = 0
-    relay.onTick('data-test', () => { ticks++ })
+    const engine = getScannerEngine()
+    const TICKET = ['AAPL', 'MSFT', 'NVDA', 'SPY']   // liquid — most likely to stream
+    const observed = new Map<string, AggregateTick>() // sym → first real tick seen
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+    relay.onTick('e2e-observer', (tick) => {
+      const t = tick as AggregateTick
+      if ((t.ev === 'A' || t.ev === 'AM' || t.ev === 'T') && t.sym && !observed.has(t.sym)) {
+        observed.set(t.sym, t)
+      }
+    })
+
     try {
+      // Baseline engine intraday BEFORE connecting — lets us prove a real tick
+      // changed it (not a leftover synthetic tick from section 10).
+      const before = new Map<string, number>()
+      for (const e of engine.getIntradaySnapshot()) before.set(e.symbol, e.lastPrice ?? 0)
+
+      // Connect on-demand by subscribing (the relay does the auth handshake).
+      relay.updateSubscriptions(TICKET)
       await new Promise<void>((resolve) => {
-        const timeout = setTimeout(resolve, 30_000)
-        relay.onStatus('data-test-status', (s) => {
+        if (relay.getStatus() === 'connected') return resolve()
+        const timeout = setTimeout(() => resolve(), 30_000)
+        relay.onStatus('e2e-status', (s) => {
           if (s === 'connected') {
             clearTimeout(timeout)
-            relay.offStatus('data-test-status')
+            relay.offStatus('e2e-status')
             resolve()
           }
         })
-        relay.updateSubscriptions(['AAPL'])
       })
+
+      // The socket MUST reach connected and hold the subscriptions — regardless
+      // of market hours — otherwise the live feed is broken.
       assert(relay.getStatus() === 'connected', `relay not connected: ${relay.getStatus()}`)
-      assert(relay.isSubscribed('AAPL'), 'AAPL must be subscribed')
-      assert(relay.getSubscriptionCount() >= 1, 'subscription count')
-      await new Promise(r => setTimeout(r, 8_000))
-      console.log(`    · received ${ticks} ticks in the observation window`)
+      assert(relay.getSubscriptionCount() >= TICKET.length, `subscriptions: ${relay.getSubscriptionCount()}`)
+      for (const s of TICKET) assert(relay.isSubscribed(s), `${s} must be subscribed`)
+
+      // Observe the real feed for up to 15 s (break as soon as ticks arrive).
+      const start = Date.now()
+      while (Date.now() - start < 15_000 && observed.size === 0) await sleep(250)
+      const waited = Date.now() - start
+      console.log(`    · connected + auth_success + ${TICKET.length} subscriptions`)
+      console.log(`    · received ${observed.size} real-tick symbols in ${waited}ms` +
+        (observed.size > 0 ? ` (${[...observed.keys()].join(', ')})` : ''))
+
+      if (observed.size === 0) {
+        // Market closed or the delayed plan is not streaming right now — the
+        // connection + auth + subscription chain is still verified end-to-end.
+        console.log('    · informational: no ticks in window (market closed / delayed plan) — connection+auth+subscribe verified')
+      } else {
+        // 1) Tick shape must be valid market data.
+        for (const [sym, t] of observed) {
+          const price = t.c || t.p || 0
+          assert(price > 0, `tick ${sym} has no price (c/p missing): ${JSON.stringify(t)}`)
+          assert(typeof t.s === 'number' && typeof t.e === 'number' && t.e >= t.s,
+            `tick ${sym} invalid time range s=${t.s} e=${t.e}`)
+        }
+        // 2) The real tick MUST reach the scanner engine's tick handler — the
+        //    same one that patches live rows + builds 10s/minute bars. Prove it
+        //    by comparing engine intraday state before vs after the real feed.
+        const after = new Map<string, number>()
+        for (const e of engine.getIntradaySnapshot()) after.set(e.symbol, e.lastPrice ?? 0)
+        const patched = [...observed.keys()].filter(sym => {
+          const beforeVal = before.get(sym) ?? 0
+          const afterVal  = after.get(sym) ?? 0
+          return afterVal > 0 && afterVal !== beforeVal
+        })
+        assert(patched.length > 0,
+          `engine never processed a real tick (observed ${[...observed.keys()].join(',')} but intraday.lastPrice unchanged)`)
+        console.log(`    · engine intraday patched from real feed: ${patched.join(', ')}`)
+      }
     } finally {
-      relay.offTick('data-test')
+      relay.offTick('e2e-observer')
+      relay.offStatus('e2e-status')
       relay.disconnect()
     }
   } : () => { console.log('  · skipped (pass --live)') })

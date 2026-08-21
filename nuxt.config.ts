@@ -13,10 +13,6 @@ export default defineNuxtConfig({
     public: {
       appVersion: pkg.version,
       appName: pkg.name,
-      // Live feed master switch. Disabled during the data refactor so only the
-      // initial load/scan path runs. Re-enable with LIVE_FEED_ENABLED=true once
-      // the scan data is verified and live trading commences.
-      liveFeedEnabled: process.env.LIVE_FEED_ENABLED === 'true',
     },
   },
 

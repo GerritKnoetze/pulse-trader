@@ -246,8 +246,8 @@ function scheduleScan() {
 
 function connectLive() {
   // SSE is the app's own push channel: it carries the rowCache snapshot, the
-  // progressive phase-2 scan rows and the server WS status. It does NOT carry
-  // upstream market data (that is gated server-side by liveFeedEnabled).
+  // progressive phase-2 scan rows and the server WS status. Live market ticks
+  // arrive on the server WS relay and fan out here as row updates + bars.
   if (eventSource) return
   wsStatus.value = 'connecting'
   eventSource = new EventSource('/api/scanner/subscribe')
