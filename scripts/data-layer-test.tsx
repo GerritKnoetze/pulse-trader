@@ -138,6 +138,8 @@ async function main(): Promise<void> {
     (await import('../src/server/database/migrations/20260821000000_rebuild-market-data-natural-key')).default,
     (await import('../src/server/database/migrations/20260817000000_create-market-data-sync-state')).default,
     (await import('../src/server/database/migrations/20260327100000_seed-llm-settings')).default,
+    (await import('../src/server/database/migrations/20260821000001_seed-intraday-window-setting')).default,
+    (await import('../src/server/database/migrations/20260821000002_seed-data-window-settings')).default,
   ]
 
   // ── Bootstrap: migrations + credentials ───────────────────────────────────────
@@ -198,6 +200,10 @@ async function main(): Promise<void> {
     const r = new SettingsRepository()
     assert(r.getValue('active-data-broker') === 'massive', 'active-data-broker default missing')
     assert(r.getValue('data-broker-details') !== null, 'data-broker-details missing')
+    assert(r.getValue('intraday-window-calendar-days') === '60', 'intraday-window-calendar-days default missing')
+    assert(r.getValue('daily-lookback-calendar-days') === '600', 'daily-lookback-calendar-days default missing')
+    assert(r.getValue('ten-second-lookback-minutes') === '70', 'ten-second-lookback-minutes default missing')
+    assert(r.getValue('ten-second-prune-hours') === '2', 'ten-second-prune-hours default missing')
   })
 
   // ── 2. Encryption & settings ──────────────────────────────────────────────────
@@ -436,6 +442,43 @@ async function main(): Promise<void> {
 
   // ── 7. Offline market-data.service paths ──────────────────────────────────────
   section('7. market-data.service (offline L1→L2 paths)')
+  await test('retention settings drive the lookback getters', () => {
+    const r = new SettingsRepository()
+    const keys: Array<[string, string]> = [
+      ['intraday-window-calendar-days', '60'],
+      ['daily-lookback-calendar-days', '600'],
+      ['ten-second-lookback-minutes', '70'],
+      ['ten-second-prune-hours', '2'],
+    ]
+    const orig = new Map(keys.map(([k]) => [k, r.getValue(k)]))
+    try {
+      // Defaults
+      mds.invalidateIntradayWindowCache(); mds.invalidateDailyLookbackCache()
+      mds.invalidateTenSecondLookbackCache(); mds.invalidateTenSecondPruneCache()
+      assert(mds.getIntradayWindowDays() === 60, `intraday default, got ${mds.getIntradayWindowDays()}`)
+      assert(mds.getDailyLookbackDays() === 600, `daily default, got ${mds.getDailyLookbackDays()}`)
+      assert(mds.getTenSecondLookbackMs() === 70 * 60_000, `10s lookback default, got ${mds.getTenSecondLookbackMs()}`)
+      assert(mds.getTenSecondPruneMs() === 2 * 3_600_000, `10s prune default, got ${mds.getTenSecondPruneMs()}`)
+
+      // Custom values
+      r.setSetting('intraday-window-calendar-days', '10', 'number'); mds.invalidateIntradayWindowCache()
+      r.setSetting('daily-lookback-calendar-days', '1825', 'number'); mds.invalidateDailyLookbackCache()
+      r.setSetting('ten-second-lookback-minutes', '30', 'number'); mds.invalidateTenSecondLookbackCache()
+      r.setSetting('ten-second-prune-hours', '5', 'number'); mds.invalidateTenSecondPruneCache()
+      assert(mds.getIntradayWindowDays() === 10, `intraday custom, got ${mds.getIntradayWindowDays()}`)
+      assert(mds.getDailyLookbackDays() === 1825, `daily custom, got ${mds.getDailyLookbackDays()}`)
+      assert(mds.getTenSecondLookbackMs() === 30 * 60_000, `10s lookback custom, got ${mds.getTenSecondLookbackMs()}`)
+      assert(mds.getTenSecondPruneMs() === 5 * 3_600_000, `10s prune custom, got ${mds.getTenSecondPruneMs()}`)
+
+      // Invalid values fall back to defaults
+      r.setSetting('daily-lookback-calendar-days', 'bogus', 'string'); mds.invalidateDailyLookbackCache()
+      assert(mds.getDailyLookbackDays() === 600, `daily invalid must fall back, got ${mds.getDailyLookbackDays()}`)
+    } finally {
+      for (const [k, v] of orig) r.setSetting(k, v ?? '60', 'number')
+      mds.invalidateIntradayWindowCache(); mds.invalidateDailyLookbackCache()
+      mds.invalidateTenSecondLookbackCache(); mds.invalidateTenSecondPruneCache()
+    }
+  })
   await test('readCachedBars returns DB rows only', () => {
     repo.deleteByTicker('L2T10')
     repo.upsertBars([bar('L2T10', 'day', 1000, 33)], 'REPLACE')

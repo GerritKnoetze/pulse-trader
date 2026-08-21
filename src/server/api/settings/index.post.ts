@@ -1,6 +1,12 @@
 import { SettingsRepository, type SettingType } from '../../database/repositories/settings-repository';
 import { mergeJsonWithExisting, encryptJsonFields } from '../../utils/encryption';
-import { invalidateCredentialCache } from '../../services/market-data.service';
+import {
+  invalidateCredentialCache,
+  invalidateIntradayWindowCache,
+  invalidateDailyLookbackCache,
+  invalidateTenSecondLookbackCache,
+  invalidateTenSecondPruneCache,
+} from '../../services/market-data.service';
 
 /** Allowed setting keys for validation */
 const ALLOWED_KEYS = new Set([
@@ -13,6 +19,11 @@ const ALLOWED_KEYS = new Set([
   // Data provider
   'active-data-broker',
   'data-broker-details',
+  // Data retention
+  'intraday-window-calendar-days',
+  'daily-lookback-calendar-days',
+  'ten-second-lookback-minutes',
+  'ten-second-prune-hours',
   // Trading broker
   'active-trading-broker',
   'trading-broker-details',
@@ -69,9 +80,15 @@ export default defineEventHandler(async (event) => {
 
     const strValue = value === null ? null : String(value);
     const type = detectType(value);
-    repo.setSetting(key, strValue, type);
-    saved.push(key);
-  }
+      repo.setSetting(key, strValue, type);
+      saved.push(key);
+      // Invalidate the retention caches so window changes take effect
+      // immediately (not after the 30 s TTL).
+      if (key === 'intraday-window-calendar-days') invalidateIntradayWindowCache();
+      if (key === 'daily-lookback-calendar-days') invalidateDailyLookbackCache();
+      if (key === 'ten-second-lookback-minutes') invalidateTenSecondLookbackCache();
+      if (key === 'ten-second-prune-hours') invalidateTenSecondPruneCache();
+    }
 
     return {
       success: true,

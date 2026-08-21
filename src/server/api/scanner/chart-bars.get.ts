@@ -21,6 +21,8 @@
  */
 import {
   readCachedBars,
+  getIntradayWindowDays,
+  getDailyLookbackDays,
 } from '../../services/market-data.service'
 import {
   aggregateToWeekly,
@@ -35,12 +37,14 @@ import { getScannerEngine } from '../../services/scanner-engine'
 
 interface ChartBar { t: number; o: number; h: number; l: number; c: number; v: number }
 
-// 600 calendar days of daily bars → supports 200 EMA / MACD warm-up on the
-// daily panel and weekly/monthly aggregation.
-const DAY_LOOKBACK_MS = 600 * 86_400_000
-// Intraday window matches market-data.service INTRADAY_WINDOW_CALENDAR_DAYS:
-// 60 calendar days ≈ 273 hourly bars → 200 EMA on 60-min + MACD warm-up.
-const WINDOW_LOOKBACK_MS = 60 * 86_400_000
+// Daily lookback matches market-data.service getDailyLookbackDays()
+// (user setting `daily-lookback-calendar-days`, default 600 calendar days →
+// supports 200 EMA / MACD warm-up on the daily panel + weekly/monthly aggregation).
+const DAY_LOOKBACK_MS = () => getDailyLookbackDays() * 86_400_000
+// Intraday window matches market-data.service getIntradayWindowDays()
+// (user setting `intraday-window-calendar-days`, default 60 calendar days ≈
+// 273 hourly bars → 200 EMA on 60-min + MACD warm-up).
+const WINDOW_LOOKBACK_MS = () => getIntradayWindowDays() * 86_400_000
 
 function toChartBars(bars: BarInput[]): ChartBar[] {
   return bars.map(b => ({
@@ -69,8 +73,8 @@ export default defineEventHandler((event) => {
 
   // ── Daily (and derived W/M) + 1-min (and derived 60/30) — in parallel so a
   //  cold-cache symbol isn't serialized (and doesn't stall during a grid load). ──
-  const dailyBars   = loadSeries(ticker, 'day', now - DAY_LOOKBACK_MS, now)
-  const minuteBars  = loadSeries(ticker, 'minute', now - WINDOW_LOOKBACK_MS, now)
+  const dailyBars   = loadSeries(ticker, 'day', now - DAY_LOOKBACK_MS(), now)
+  const minuteBars  = loadSeries(ticker, 'minute', now - WINDOW_LOOKBACK_MS(), now)
   const daily   = toChartBars(dailyBars)
   const weekly  = toChartBars(aggregateToWeekly(dailyBars))
   const monthly = toChartBars(aggregateToMonthly(dailyBars))
@@ -84,7 +88,7 @@ export default defineEventHandler((event) => {
   if (cached5 && cached5.length > 0) {
     fiveMin = toChartBars(cached5)
   } else {
-    const db5 = readCachedBars(ticker, '5min', now - WINDOW_LOOKBACK_MS, now)
+    const db5 = readCachedBars(ticker, '5min', now - WINDOW_LOOKBACK_MS(), now)
     if (db5.length > 0) {
       fiveMin = toChartBars(db5)
     } else if (minuteBars.length > 0) {

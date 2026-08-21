@@ -425,19 +425,60 @@ function mapRowToBar(row: MarketDataRow): BarInput {
   };
 }
 
-// Calendar days to look back when doing a full daily history fetch (~400 trading days)
-const DAILY_LOOKBACK_CALENDAR_DAYS = 600;
+// ── User-configurable lookback / retention windows ─────────────────────────────
+// Each maps to a numeric Settings key (Settings → General → Data Retention),
+// read with a 30 s TTL cache and invalidated on save so changes apply fast.
 
-// Rolling window for intraday bars (1-minute and 5-minute). Sized for the
-// longest indicator the charts need: a 200 EMA on the 60-min panel requires
-// ~200 hourly bars ≈ 31 trading days ≈ 44 calendar days. 60 calendar days
-// (~42 trading days ≈ 273 hourly bars) gives that plus MACD warm-up margin.
-const INTRADAY_WINDOW_CALENDAR_DAYS = 60;
+const SETTINGS_TTL_MS = 30_000;
 
-// 10-second bars: look back ~70 minutes on a cold fetch (≈420 bars — enough to
-// seed a 200 EMA with context) and prune SQLite rows older than ~2 hours.
-const TEN_SEC_LOOKBACK_MS = 70 * 60_000;
-const TEN_SEC_PRUNE_MS    = 2 * 60 * 60_000;
+interface NumericSetting {
+  get(): number;
+  invalidate(): void;
+}
+
+function numericSetting(key: string, def: number): NumericSetting {
+  let value: number | null = null;
+  let expiry = 0;
+  return {
+    get(): number {
+      if (value !== null && Date.now() < expiry) return value;
+      let v = def;
+      try {
+        const raw = new SettingsRepository().getValue(key);
+        const parsed = raw ? parseInt(raw, 10) : NaN;
+        if (Number.isFinite(parsed) && parsed > 0) v = parsed;
+      } catch { /* fall back to default */ }
+      value = v;
+      expiry = Date.now() + SETTINGS_TTL_MS;
+      return value;
+    },
+    invalidate(): void { value = null; expiry = 0; },
+  };
+}
+
+// Daily history lookback (default 600 calendar days ≈ 400 trading days) —
+// enough for weekly/monthly aggregation, ATR14, avgVol30.
+const dailyLookback = numericSetting('daily-lookback-calendar-days', 600);
+export const getDailyLookbackDays = dailyLookback.get;
+export const invalidateDailyLookbackCache = dailyLookback.invalidate;
+
+// Intraday (1-min / 5-min) retention window (default 60 calendar days ≈ 42
+// trading days — 200 EMA on the 60-min panel + MACD warm-up margin).
+const intradayWindow = numericSetting('intraday-window-calendar-days', 60);
+export const getIntradayWindowDays = intradayWindow.get;
+export const invalidateIntradayWindowCache = intradayWindow.invalidate;
+
+// 10-second bars: look back on a cold fetch (default 70 minutes ≈ 420 bars —
+// enough to seed a 200 EMA with context) and prune SQLite rows older than the
+// rolling window (default 2 hours).
+const tenSecLookback = numericSetting('ten-second-lookback-minutes', 70);
+export const getTenSecondLookbackMs = (): number => tenSecLookback.get() * 60_000;
+export const invalidateTenSecondLookbackCache = tenSecLookback.invalidate;
+
+const tenSecPrune = numericSetting('ten-second-prune-hours', 2);
+export const getTenSecondPruneMs = (): number => tenSecPrune.get() * 3_600_000;
+export const invalidateTenSecondPruneCache = tenSecPrune.invalidate;
+
 /** Maximum 10s bars kept per symbol in the in-memory buffer (~75 min). */
 export const TEN_SEC_BUFFER = 450;
 
@@ -461,7 +502,7 @@ export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
   try {
     if (latest === null) {
       // First fetch: pull full history
-      const from = daysAgoEt(DAILY_LOOKBACK_CALENDAR_DAYS);
+      const from = daysAgoEt(getDailyLookbackDays());
       const bars = await fetchAggregates(ticker, 1, 'day', from, toStr);
       if (bars.length > 0) {
         repo.upsertBars(bars);
@@ -491,7 +532,7 @@ export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
   }
 
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - DAILY_LOOKBACK_CALENDAR_DAYS);
+  cutoff.setDate(cutoff.getDate() - getDailyLookbackDays());
   const rows = repo.getBars(ticker, 'day', cutoff.getTime(), Date.now());
   return rows.map(mapRowToBar);
   });
@@ -512,7 +553,7 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
   const repo = new MarketDataRepository();
 
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - INTRADAY_WINDOW_CALENDAR_DAYS);
+  cutoff.setDate(cutoff.getDate() - getIntradayWindowDays());
   const cutoffMs = cutoff.getTime();
 
   // Prune expired bars first
@@ -523,7 +564,7 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
   try {
     if (latest === null || latest < cutoffMs) {
       // No data or all data expired: fetch full window (date precision is fine here)
-      const fromStr = daysAgoEt(INTRADAY_WINDOW_CALENDAR_DAYS);
+      const fromStr = daysAgoEt(getIntradayWindowDays());
       const toStr = todayEt();
       const bars = await fetchAggregates(ticker, 1, 'minute', fromStr, toStr);
       if (bars.length > 0) {
@@ -569,7 +610,7 @@ export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[
   const repo = new MarketDataRepository();
 
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - INTRADAY_WINDOW_CALENDAR_DAYS);
+  cutoff.setDate(cutoff.getDate() - getIntradayWindowDays());
   const cutoffMs = cutoff.getTime();
 
   repo.pruneOlderThan(ticker, '5min', cutoffMs);
@@ -578,7 +619,7 @@ export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[
 
   try {
     if (latest === null || latest < cutoffMs) {
-      const fromStr = daysAgoEt(INTRADAY_WINDOW_CALENDAR_DAYS);
+      const fromStr = daysAgoEt(getIntradayWindowDays());
       const toStr = todayEt();
       const bars = await fetchAggregates(ticker, 5, 'minute', fromStr, toStr);
       if (bars.length > 0) {
@@ -648,7 +689,7 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
   return dedupeSync(`${ticker}:10s`, async () => {
   const repo = new MarketDataRepository();
   const now = Date.now();
-  const fromMs = now - TEN_SEC_LOOKBACK_MS;
+  const fromMs = now - getTenSecondLookbackMs();
 
   // L1: in-memory buffer — only serve when it holds real history.
   const cached = getCandleCache().get(ticker, '10s');
@@ -659,7 +700,7 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
   // L2: SQLite rolling window.
   const fromDb = repo.getBars(ticker, '10s', fromMs, now).map(mapRowToBar);
   if (fromDb.length >= MIN_TEN_SEC_HISTORY) {
-    repo.pruneOlderThan(ticker, '10s', now - TEN_SEC_PRUNE_MS);
+    repo.pruneOlderThan(ticker, '10s', now - getTenSecondPruneMs());
     getCandleCache().set(ticker, '10s', fromDb);
     return { bars: fromDb, seeded: true };
   }
@@ -676,7 +717,7 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
     const bars = await fetchAggregates(ticker, 10, 'second', String(fromMs), String(now));
     if (bars.length > 0) {
       repo.upsertBars(bars);
-      repo.pruneOlderThan(ticker, '10s', now - TEN_SEC_PRUNE_MS);
+      repo.pruneOlderThan(ticker, '10s', now - getTenSecondPruneMs());
       const bounded = bars.slice(-TEN_SEC_BUFFER);
       getCandleCache().set(ticker, '10s', bounded);
       return { bars: bounded, seeded: true };

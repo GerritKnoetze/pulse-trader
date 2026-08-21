@@ -8,10 +8,12 @@ import {
   ChartBarIcon,
   ArrowsRightLeftIcon,
   SparklesIcon,
+  ClockIcon,
 } from '@heroicons/vue/24/outline';
 import { useSettings } from '~/composables/useSettings';
 import { useToast } from '~/composables/useToast';
 import SettingsGeneral from '~/components/settings/SettingsGeneral.vue';
+import SettingsDataRetention from '~/components/settings/SettingsDataRetention.vue';
 import SettingsDataProvider from '~/components/settings/SettingsDataProvider.vue';
 import SettingsTradingBroker from '~/components/settings/SettingsTradingBroker.vue';
 import SettingsLlmProvider from '~/components/settings/SettingsLlmProvider.vue';
@@ -23,6 +25,7 @@ const toast = useToast();
 
 // ── Child component refs ───────────────────────────────────
 const generalRef = ref<InstanceType<typeof SettingsGeneral> | null>(null);
+const dataRetentionRef = ref<InstanceType<typeof SettingsDataRetention> | null>(null);
 const dataProviderRef = ref<InstanceType<typeof SettingsDataProvider> | null>(null);
 const tradingBrokerRef = ref<InstanceType<typeof SettingsTradingBroker> | null>(null);
 const llmProviderRef = ref<InstanceType<typeof SettingsLlmProvider> | null>(null);
@@ -35,6 +38,7 @@ async function saveAll() {
   try {
     const payload: Record<string, unknown> = {
       ...generalRef.value?.getFormData(),
+      ...dataRetentionRef.value?.getFormData(),
       ...dataProviderRef.value?.getFormData(),
       ...tradingBrokerRef.value?.getFormData(),
       ...llmProviderRef.value?.getFormData(),
@@ -51,6 +55,7 @@ async function saveAll() {
 // ── Navigation sections ────────────────────────────────────
 const sections = [
   { id: 'trading', label: 'Trading', icon: CurrencyDollarIcon },
+  { id: 'data-retention', label: 'Data Retention', icon: ClockIcon },
   { id: 'data-provider', label: 'Data Provider', icon: ChartBarIcon },
   { id: 'trading-broker', label: 'Trading Broker', icon: ArrowsRightLeftIcon },
   { id: 'llm-provider', label: 'AI / LLM', icon: SparklesIcon },
@@ -62,6 +67,7 @@ const searchQuery = ref('');
 /** Searchable keywords per section (nav labels + field labels + subsections) */
 const sectionKeywords: Record<string, string[]> = {
   trading: ['trading', 'trading preferences', 'local currency', 'position size', 'risk per trade', 'confirm trade', 'debug', 'debug mode', 'technical logs', 'console'],
+  'data-retention': ['data retention', 'intraday window', '1 minute', '5 minute', 'daily lookback', 'history', '10 second', 'ten second', '10s', 'lookback', 'prune', 'retention', 'days'],
   'data-provider': ['data provider', 'massive', 'api key', 'api base url', 'websocket', 'market data', 'price feeds', 'quotes'],
   'trading-broker': ['trading broker', 'account broker', 'tradezero', 'live account', 'paper account', 'api key', 'api secret', 'orders', 'portfolio'],
   'llm-provider': ['ai', 'llm', 'language model', 'github copilot', 'personal access token', 'pat', 'gpt'],
@@ -171,6 +177,7 @@ onBeforeUnmount(() => {
       <!-- Right Content (flows naturally, parent scrolls) -->
       <div class="settings-content">
         <SettingsGeneral v-show="visibleSectionIds.has('trading')" ref="generalRef" />
+        <SettingsDataRetention v-show="visibleSectionIds.has('data-retention')" ref="dataRetentionRef" />
         <SettingsDataProvider v-show="visibleSectionIds.has('data-provider')" ref="dataProviderRef" />
         <SettingsTradingBroker v-show="visibleSectionIds.has('trading-broker')" ref="tradingBrokerRef" />
         <SettingsLlmProvider v-show="visibleSectionIds.has('llm-provider')" ref="llmProviderRef" />

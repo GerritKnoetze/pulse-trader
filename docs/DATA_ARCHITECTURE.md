@@ -321,7 +321,9 @@ share a single coherent fetch. Chart reads (`chart-bars`) are cache/DB-only and 
 one-shot seed** (`scanner-engine.seedSymbolBars`) that fills missing series and pushes them to the client
 over SSE — see §5.1 note and §9.
 
-**Intraday window = 60 calendar days** (`INTRADAY_WINDOW_CALENDAR_DAYS`, `market-data.service.ts:422`):
+**Intraday window = 60 calendar days by default** (`getIntradayWindowDays()`, `market-data.service.ts:433` —
+user-configurable via **Settings → General → "Intraday window (days)"**, setting `intraday-window-calendar-days`,
+30 s TTL cache, invalidated on save):
 sized for the longest chart indicator — a 200 EMA on the 60-min panel needs ~200 hourly bars
 (≈ 31 trading days); 60 days (≈ 273 hourly bars) adds MACD warm-up margin. Daily lookback stays
 600 calendar days.
@@ -352,8 +354,9 @@ getDailyBars(symbol)                                (scanner-engine.ts:730)
                   → return bars
 ```
 
-- **Lookback:** `DAILY_LOOKBACK_CALENDAR_DAYS = 600` (~400 trading days) — sufficient for weekly/monthly
-  bars, ATR14, avgVol30.
+- **Lookback:** `getDailyLookbackDays()` (default 600 calendar days ≈ 400 trading days — user-configurable
+  via Settings → General → "Daily lookback (days)", setting `daily-lookback-calendar-days`) — sufficient for
+  weekly/monthly bars, ATR14, avgVol30.
 - **Today's bar is intentionally excluded** from storage (fetch window ends at *yesterday* ET). Today's price
   comes from the snapshot / live WS, and a synthetic today-bar is built at TA time (see §12).
 - **Freshness gate:** the engine serves the L1 daily series as-is when it is current within `DAY_MS` (24 h)
@@ -429,11 +432,13 @@ gated internally so it only fetches when a 5m bucket elapsed).
   (`accumulateTenSecond` → `finalizeTenSecond`, `scanner-engine.ts:878/903`). Each finalized bucket is
   appended to the CandleCache `'10s'` buffer (capped `TEN_SEC_BUFFER = 450`), persisted to SQLite via
   `persistTenSecondBar()` (`INSERT OR IGNORE`), and broadcast to open charts as an SSE `bars` event.
-- **Seed (REST):** on a cold fetch the engine seeds ~70 minutes of history
-  (`TEN_SEC_LOOKBACK_MS`, `multiplier=10, timespan='second'`). The buffer is only served as history once
+- **Seed (REST):** on a cold fetch the engine seeds `getTenSecondLookbackMs()` of history
+  (default 70 minutes, user-configurable via `ten-second-lookback-minutes`; `multiplier=10, timespan='second'`).
+  The buffer is only served as history once
   it holds ≥ `MIN_TEN_SEC_HISTORY = 120` buckets; an empty/unsupported REST response is retried at most
   once every 5 min per symbol (`lastTenSecSeedAt` cooldown).
-- **Retention:** SQLite 10s rows are pruned to a ~2-hour rolling window (`TEN_SEC_PRUNE_MS`).
+- **Retention:** SQLite 10s rows are pruned to `getTenSecondPruneMs()` (default 2 hours, user-configurable
+  via `ten-second-prune-hours`).
 - `refreshSymbolBars` runs the 10s seed **first** (so the 10S chart fills ASAP) and resets its broadcast
   watermark on a fresh seed so the FULL history reaches the chart (`scanner-engine.ts:417`).
 - `chart-bars` reads the `'10s'` cache buffer synchronously and never blocks the chart open on the seed.
@@ -1499,7 +1504,7 @@ rowCache expiry (H), reconcile migration history (G).
 | Non-blocking chart reads | `chart-bars.get.ts` is now cache/DB-only (L1 → L2) and NEVER waits on the network; a missing/stale series is backfilled in the background via `scanner-engine.seedSymbolBars()` and streamed to the client as SSE `bars` events |
 | One-shot background seed | `seedSymbolBars(symbol)` (per-symbol `seeding` Set dedup) refetches 10s→minute→5min→daily for an open chart; `watchSymbol` now routes its immediate backfill through the same guard so chart-bars and chart-watch share a single fetch |
 | In-flight sync dedup | `dedupeSync()` lock in `market-data.service.ts` per `(ticker, timespan)` — concurrent scan/seed/refresh requests share one coherent upstream fetch (no interleaved partial writes) |
-| Intraday window → 60 days | `INTRADAY_WINDOW_CALENDAR_DAYS = 60` (was 7) for minute + 5-min series and chart-bars lookback — supports a 200 EMA on the 60-min panel (~200 hourly bars) plus MACD warm-up margin |
+| Lookback/retention windows configurable | `getIntradayWindowDays()` / `getDailyLookbackDays()` / `getTenSecondLookbackMs()` / `getTenSecondPruneMs()` (was hardcoded `INTRADAY_WINDOW_CALENDAR_DAYS=60`, `DAILY_LOOKBACK_CALENDAR_DAYS=600`, `TEN_SEC_LOOKBACK_MS=70m`, `TEN_SEC_PRUNE_MS=2h`). All four user-adjustable via Settings → General → Data Retention; 30 s TTL cache + save-invalidate. |
 | Demo-data removal | `ScannerSymbolChart.vue` no longer falls back to generated OHLC — charts show only real data (empty panel until the seed fills it via SSE) |
 | D-panel cold-open fix | `applyDayHistory` now adopts the full daily seed when the D panel starts empty (previously the first full-history broadcast was dropped) |
 | Test harness | `scripts/data-layer-test.tsx` — self-contained, run with `npx tsx`; offline suite by default, `--online` for REST L1→L2→L3 paths, `--live` for the real WS relay; uses a throwaway temp SQLite DB |

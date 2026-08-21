@@ -12,6 +12,11 @@ const SETTINGS_KEYS = [
   // Data provider
   'active-data-broker',
   'data-broker-details',
+  // Data retention
+  'intraday-window-calendar-days',
+  'daily-lookback-calendar-days',
+  'ten-second-lookback-minutes',
+  'ten-second-prune-hours',
   // Trading broker
   'active-trading-broker',
   'trading-broker-details',

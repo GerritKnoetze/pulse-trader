@@ -42,6 +42,23 @@ defineExpose({ getFormData });
 onMounted(load);
 </script>
 
+<style scoped>
+.unused-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(200, 64, 64, 0.18);
+  border: 1px solid rgba(200, 64, 64, 0.45);
+  color: #e08080;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+</style>
+
 <template>
   <div class="settings-section">
     <!-- Trading Preferences -->
@@ -52,7 +69,7 @@ onMounted(load);
       <div class="settings-card-body">
         <div class="setting-item">
           <label class="setting-label">
-            <span class="label-text">Local Currency</span>
+            <span class="label-text">Local Currency <span class="unused-badge">Unused</span></span>
             <span class="label-description">Your local currency for portfolio conversion</span>
           </label>
           <select v-model="form.localCurrency" class="select-field">
@@ -69,7 +86,7 @@ onMounted(load);
 
         <div class="setting-item">
           <label class="setting-label">
-            <span class="label-text">Default Position Size</span>
+            <span class="label-text">Default Position Size <span class="unused-badge">Unused</span></span>
             <span class="label-description">Default number of shares for new trades</span>
           </label>
           <input v-model.number="form.defaultPositionSize" type="number" class="input-field" min="1" step="1" />
@@ -77,7 +94,7 @@ onMounted(load);
 
         <div class="setting-item">
           <label class="setting-label">
-            <span class="label-text">Risk Per Trade (%)</span>
+            <span class="label-text">Risk Per Trade (%) <span class="unused-badge">Unused</span></span>
             <span class="label-description">Maximum risk percentage per trade</span>
           </label>
           <input v-model.number="form.riskPerTrade" type="number" class="input-field" min="0.1" max="10" step="0.1" />
@@ -85,7 +102,7 @@ onMounted(load);
 
         <div class="setting-item">
           <div class="setting-label">
-            <span class="label-text">Confirm trade actions</span>
+            <span class="label-text">Confirm trade actions <span class="unused-badge">Unused</span></span>
             <span class="label-description">Show confirmation dialog before executing trades</span>
           </div>
           <label class="setting-checkbox">
