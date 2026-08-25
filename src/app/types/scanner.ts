@@ -71,6 +71,9 @@ export interface ScannerRow {
    *  with high/low/close kept live from the WS tick stream. Powers the D panel's
    *  today candle without deriving it from the 1-minute series. */
   day?: { o: number; h: number; l: number; c: number }
+  /** Live session VWAP from the WS feed (Volume-Weighted Average Price) —
+   *  used by the chart's VWAP overlay forming candle. */
+  vw?: number
 }
 
 export type SortDirection = 'asc' | 'desc' | null

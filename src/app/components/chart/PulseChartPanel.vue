@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import PulseChartHeader from './PulseChartHeader.vue'
-import PulseChart from './PulseChart.vue'
-import type { OHLCBar, BarMarker } from './PulseChart.vue'
+import PulseChart, { type OHLCBar, type BarMarker, type ChartOverlays } from './PulseChart.vue'
+import type { OverlayId } from '~/utils/indicators'
 
-defineProps<{
+const props = defineProps<{
   symbol:      string
   label:       string
   timeVisible: boolean
@@ -12,6 +13,38 @@ defineProps<{
   markers:     BarMarker[]
   isDemo:      boolean
 }>()
+
+// ── Indicator overlay toggles (per-timeframe state, persisted) ───────────────
+const DEFAULT_OVERLAYS: ChartOverlays = {
+  ema9: false,
+  ema20: true,
+  ema200: false,
+  vwap: false,
+  volume: true,
+  macd: false,
+}
+
+function storageKey(): string {
+  return `pulse-overlays-${props.label}`
+}
+
+function loadOverlays(): ChartOverlays {
+  try {
+    const raw = localStorage.getItem(storageKey())
+    if (raw) return { ...DEFAULT_OVERLAYS, ...JSON.parse(raw) as Partial<ChartOverlays> }
+  } catch { /* fall through to defaults */ }
+  return { ...DEFAULT_OVERLAYS }
+}
+
+const overlays = ref<ChartOverlays>(loadOverlays())
+
+watch(overlays, (v) => {
+  try { localStorage.setItem(storageKey(), JSON.stringify(v)) } catch { /* storage unavailable */ }
+}, { deep: true })
+
+function toggleOverlay(id: OverlayId): void {
+  overlays.value = { ...overlays.value, [id]: !overlays.value[id] }
+}
 </script>
 
 <template>
@@ -20,6 +53,8 @@ defineProps<{
       :symbol="symbol"
       :label="label"
       :is-demo="isDemo"
+      :overlays="overlays"
+      @toggle-overlay="toggleOverlay"
     />
     <PulseChart
       class="panel-chart"
@@ -27,6 +62,7 @@ defineProps<{
       :markers="markers"
       :time-visible="timeVisible"
       :show-seconds="showSeconds"
+      :overlays="overlays"
     />
   </div>
 </template>

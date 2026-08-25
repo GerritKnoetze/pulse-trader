@@ -80,7 +80,13 @@ export interface BarsEvent {
   type: 'bars'
   symbol: string
   timespan: string
-  bars: { t: number; o: number; h: number; l: number; c: number; v: number }[]
+  bars: {
+    t: number; o: number; h: number; l: number; c: number; v: number
+    ema9?: number; ema20?: number; ema200?: number
+    ema12?: number; ema26?: number
+    macd?: number; macdSignal?: number; macdHist?: number
+    vwap?: number
+  }[]
 }
 type BarsHandler = (msg: BarsEvent) => void
 const barsHandlers = new Set<BarsHandler>()

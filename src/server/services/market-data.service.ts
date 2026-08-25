@@ -6,10 +6,32 @@ import { decryptJsonFields } from '../utils/encryption';
 import { getMetrics } from './metrics';
 import { getCandleCache } from './candle-cache';
 import { daysAgoEt, todayEt, yesterdayEt } from '../utils/et-time';
+import { EMA_WARMUP_BARS } from '../../app/utils/indicators';
 
 // Hard ceiling for any single upstream API call — a hung Massive.com request
 // must never block a scan, chart, or sync indefinitely.
 const FETCH_TIMEOUT_MS = 15_000;
+
+/** Millisecond period of one bar for a given app timespan. */
+export function barPeriodMs(timespan: string): number {
+  switch (timespan) {
+    case 'day':   return 86_400_000
+    case '5min':  return 300_000
+    case 'minute':return 60_000
+    case '10s':   return 10_000
+    default:      return 60_000
+  }
+}
+
+/**
+ * Extra leading history (in ms) the indicator computation needs before the
+ * display window so EMA(200) is exact from the first visible bar. The data
+ * layer fetches and RETAINS window + this much context; the compute layer trims
+ * the warm-up prefix so the client never sees the SMA seed ramp.
+ */
+export function warmupMs(timespan: string): number {
+  return EMA_WARMUP_BARS * barPeriodMs(timespan)
+}
 
 function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -55,6 +77,7 @@ interface MassiveBar {
   l?: number;  // low
   c?: number;  // close
   v?: number;  // volume
+  vw?: number; // volume-weighted average price (VWAP)
   n?: number;  // transactions
 }
 
@@ -168,6 +191,7 @@ function mapBar(ticker: string, timespan: string, bar: MassiveBar): BarInput {
     low: bar.l ?? 0,
     close: bar.c ?? 0,
     volume: bar.v ?? 0,
+    vwap: bar.vw ?? undefined,
     transactions: bar.n,
   };
 }
@@ -338,6 +362,7 @@ export async function getAggregates(
     low: row.Low,
     close: row.Close,
     volume: row.Volume,
+    vwap: row.Vwap ?? undefined,
     transactions: row.Transactions ?? undefined,
   }));
 }
@@ -421,6 +446,7 @@ function mapRowToBar(row: MarketDataRow): BarInput {
     low: row.Low,
     close: row.Close,
     volume: row.Volume,
+    vwap: row.Vwap ?? undefined,
     transactions: row.Transactions ?? undefined,
   };
 }
@@ -482,6 +508,32 @@ export const invalidateTenSecondPruneCache = tenSecPrune.invalidate;
 /** Maximum 10s bars kept per symbol in the in-memory buffer (~75 min). */
 export const TEN_SEC_BUFFER = 450;
 
+// ── Vwap backfill (one-time, lazy) ────────────────────────────────────────────
+// Rows written before the Vwap column existed have NULL Vwap, so the VWAP
+// overlay only drew on the freshly-synced tail. When a series is next synced and
+// its latest stored bar still lacks Vwap, we re-fetch the full window (REPLACE)
+// once so every row picks up the aggregate's `vw` straight from the feed. A
+// per-process guard skips series where the feed itself returns no vwap.
+const vwapBackfilled = new Set<string>();
+
+function vwapBackfillKey(ticker: string, timespan: string): string {
+  return `${ticker}:${timespan}`;
+}
+
+function needsVwapBackfill(ticker: string, timespan: string, latestRow: MarketDataRow | null): boolean {
+  if (!latestRow || vwapBackfilled.has(vwapBackfillKey(ticker, timespan))) return false;
+  return latestRow.Vwap == null;
+}
+
+function markVwapBackfilled(ticker: string, timespan: string): void {
+  vwapBackfilled.add(vwapBackfillKey(ticker, timespan));
+}
+
+/** Public check for callers that need to know a series is about to backfill. */
+export function needsSeriesVwapBackfill(ticker: string, timespan: string): boolean {
+  return needsVwapBackfill(ticker, timespan, new MarketDataRepository().getLatestBar(ticker, timespan));
+}
+
 /**
  * Three-layer daily bar fetch:
  *   L2 → SQLite (permanent store, incremental updates to yesterday)
@@ -497,16 +549,21 @@ export async function getOrSyncDailyBars(ticker: string): Promise<BarInput[]> {
   const repo = new MarketDataRepository();
 
   const toStr = yesterdayEt();
-  const latest = repo.getLatestTimestamp(ticker, 'day');
+  const latestRow = repo.getLatestBar(ticker, 'day');
+  const latest = latestRow?.Timestamp ?? null;
+  const backfill = needsVwapBackfill(ticker, 'day', latestRow);
 
   try {
-    if (latest === null) {
-      // First fetch: pull full history
-      const from = daysAgoEt(getDailyLookbackDays());
+    if (latest === null || backfill) {
+      // First fetch OR vwap backfill: pull full history (REPLACE overwrites the
+      // NULL-Vwap rows with the feed's vw). Fetch `display + warm-up` days so
+      // the indicator layer has EMA(200) context before the displayed window.
+      const from = daysAgoEt(getDailyLookbackDays() + EMA_WARMUP_BARS);
       const bars = await fetchAggregates(ticker, 1, 'day', from, toStr);
       if (bars.length > 0) {
         repo.upsertBars(bars);
         repo.updateSyncState(ticker, 'day', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+        if (!bars[bars.length - 1]!.vwap) markVwapBackfilled(ticker, 'day');
       }
     } else {
       // Incremental: fetch only bars after the last stored date
@@ -556,20 +613,26 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
   cutoff.setDate(cutoff.getDate() - getIntradayWindowDays());
   const cutoffMs = cutoff.getTime();
 
-  // Prune expired bars first
-  repo.pruneOlderThan(ticker, 'minute', cutoffMs);
+  // Prune expired bars first — BUT retain the EMA/MACD warm-up context that the
+  // ET-calendar fetch overshoot produced before the display cut-off, so the
+  // indicator layer can compute EMA(200) exactly (trimmed, not shown).
+  repo.pruneOlderThan(ticker, 'minute', cutoffMs - warmupMs('minute'));
 
-  const latest = repo.getLatestTimestamp(ticker, 'minute');
+  const latestRow = repo.getLatestBar(ticker, 'minute');
+  const latest = latestRow?.Timestamp ?? null;
+  const backfill = needsVwapBackfill(ticker, 'minute', latestRow);
 
   try {
-    if (latest === null || latest < cutoffMs) {
-      // No data or all data expired: fetch full window (date precision is fine here)
+    if (latest === null || latest < cutoffMs || backfill) {
+      // No data / all expired / vwap backfill: fetch full window. REPLACE
+      // overwrites the NULL-Vwap rows with the feed's vw when backfilling.
       const fromStr = daysAgoEt(getIntradayWindowDays());
       const toStr = todayEt();
       const bars = await fetchAggregates(ticker, 1, 'minute', fromStr, toStr);
       if (bars.length > 0) {
-        repo.upsertBars(bars, 'IGNORE');
+        repo.upsertBars(bars, backfill ? 'REPLACE' : 'IGNORE');
         repo.updateSyncState(ticker, 'minute', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+        if (!bars[bars.length - 1]!.vwap) markVwapBackfilled(ticker, 'minute');
       }
     } else {
       // Incremental: fetch from the next minute after the latest stored bar.
@@ -613,18 +676,22 @@ export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[
   cutoff.setDate(cutoff.getDate() - getIntradayWindowDays());
   const cutoffMs = cutoff.getTime();
 
-  repo.pruneOlderThan(ticker, '5min', cutoffMs);
+  // Retain EMA/MACD warm-up context before the display cut-off (see minute).
+  repo.pruneOlderThan(ticker, '5min', cutoffMs - warmupMs('5min'));
 
-  const latest = repo.getLatestTimestamp(ticker, '5min');
+  const latestRow = repo.getLatestBar(ticker, '5min');
+  const latest = latestRow?.Timestamp ?? null;
+  const backfill = needsVwapBackfill(ticker, '5min', latestRow);
 
   try {
-    if (latest === null || latest < cutoffMs) {
+    if (latest === null || latest < cutoffMs || backfill) {
       const fromStr = daysAgoEt(getIntradayWindowDays());
       const toStr = todayEt();
       const bars = await fetchAggregates(ticker, 5, 'minute', fromStr, toStr);
       if (bars.length > 0) {
         repo.upsertBars(bars, 'REPLACE');
         repo.updateSyncState(ticker, '5min', { latestTimestamp: bars[bars.length - 1]!.timestamp });
+        if (!bars[bars.length - 1]!.vwap) markVwapBackfilled(ticker, '5min');
       }
     } else {
       const incrementalFrom = latest + 5 * 60_000;
@@ -689,7 +756,11 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
   return dedupeSync(`${ticker}:10s`, async () => {
   const repo = new MarketDataRepository();
   const now = Date.now();
-  const fromMs = now - getTenSecondLookbackMs();
+  // Fetch at least `display buffer + EMA warm-up` bars so the indicator layer has
+  // EMA(200) context before the displayed buffer, even when the configured
+  // lookback is shorter. Display stays capped at TEN_SEC_BUFFER; the extra bars
+  // are warm-up context stored in DB and trimmed by the indicator enrich.
+  const fromMs = now - Math.max(getTenSecondLookbackMs(), (TEN_SEC_BUFFER + EMA_WARMUP_BARS) * 10_000);
 
   // L1: in-memory buffer — only serve when it holds real history.
   const cached = getCandleCache().get(ticker, '10s');
@@ -706,9 +777,10 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
   }
 
   // L3: REST — with a cooldown so a temporarily-empty/unsupported response
-  // isn't retried on every minute refresh.
+  // isn't retried on every minute refresh. A pending vwap backfill bypasses it.
   const lastAttempt = lastTenSecSeedAt.get(ticker) ?? 0;
-  if (now - lastAttempt < 5 * 60_000) {
+  const backfill = needsVwapBackfill(ticker, '10s', repo.getLatestBar(ticker, '10s'));
+  if (!backfill && now - lastAttempt < 5 * 60_000) {
     return { bars: (cached && cached.length > 0) ? cached : fromDb, seeded: false };
   }
   lastTenSecSeedAt.set(ticker, now);
@@ -720,6 +792,7 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
       repo.pruneOlderThan(ticker, '10s', now - getTenSecondPruneMs());
       const bounded = bars.slice(-TEN_SEC_BUFFER);
       getCandleCache().set(ticker, '10s', bounded);
+      if (!bars[bars.length - 1]!.vwap) markVwapBackfilled(ticker, '10s');
       return { bars: bounded, seeded: true };
     }
   } catch { /* non-critical — live accumulation builds the series */ }

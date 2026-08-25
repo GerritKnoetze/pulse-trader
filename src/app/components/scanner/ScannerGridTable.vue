@@ -128,11 +128,14 @@ function getCellText(col: ColDef, row: ScannerRow): string {
   }
 }
 function getCellTdClass(col: ColDef, row: ScannerRow): string {
-  if (col.key === 'symbol')  return 'td-symbol'
-  if (col.key === 'inForce') return 'center td-inforce'
-  if (col.key === 'ftfc')    return 'center td-ftfc'
-  if (col.key === 'mtf')     return 'td-mtf'
-  return [col.align, getCellClass(col, row)].filter(Boolean).join(' ')
+  const base: string =
+    col.key === 'symbol'  ? 'td-symbol'
+    : col.key === 'inForce' ? 'center td-inforce'
+    : col.key === 'ftfc'    ? 'center td-ftfc'
+    : col.key === 'mtf'     ? 'td-mtf'
+    : [col.align, getCellClass(col, row)].filter(Boolean).join(' ')
+  // Highlight the whole sorted column.
+  return sortKey.value === col.key ? base + ' col-sorted' : base
 }
 </script>
 
@@ -147,7 +150,7 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
             v-for="(col, colIdx) in orderedColumns"
             :key="col.key"
             :style="{ width: colWidths[col.key] + 'px', minWidth: colWidths[col.key] + 'px' }"
-            :class="['col-' + col.key, col.align, { 'col-drag-over': dragOverIdx === colIdx }]"
+            :class="['col-' + col.key, col.align, { 'col-drag-over': dragOverIdx === colIdx, 'col-sorted': sortKey === col.key }]"
             @dragover="onColDragOver($event, colIdx)"
             @drop="onColDrop($event, colIdx)"
             @dragleave="dragOverIdx = null"
@@ -337,6 +340,17 @@ function getCellTdClass(col: ColDef, row: ScannerRow): string {
   border-collapse: collapse;
   font-size: 0.83rem;
   table-layout: fixed;
+}
+
+/* Sorted column highlight — primary orange at 80% transparency. The sticky
+   header must stay OPAQUE (so scrolled rows never bleed through it): the orange
+   tint is composited ON TOP of the fixed header background. Body cells use the
+   plain 80%-transparent orange. */
+.scanner-table th.col-sorted {
+  background: linear-gradient(rgba(200, 118, 40, 0.2), rgba(200, 118, 40, 0.2)), var(--color-background-mute);
+}
+.scanner-table td.col-sorted {
+  background: rgba(200, 118, 40, 0.2);
 }
 
 .scanner-table thead th {

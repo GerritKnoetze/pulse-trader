@@ -140,6 +140,7 @@ async function main(): Promise<void> {
     (await import('../src/server/database/migrations/20260327100000_seed-llm-settings')).default,
     (await import('../src/server/database/migrations/20260821000001_seed-intraday-window-setting')).default,
     (await import('../src/server/database/migrations/20260821000002_seed-data-window-settings')).default,
+    (await import('../src/server/database/migrations/20260821000003_add-market-data-vwap')).default,
   ]
 
   // ── Bootstrap: migrations + credentials ───────────────────────────────────────

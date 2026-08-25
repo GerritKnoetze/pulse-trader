@@ -23,7 +23,9 @@ export interface AggregateTick {
   c: number    // close / last price
   v: number    // volume this tick
   av: number   // accumulated volume today
-  vw: number   // vwap
+  vw: number   // this tick's volume-weighted average price
+  a?: number   // today's volume-weighted average price (session VWAP)
+  op?: number  // today's official opening price
   s: number    // start timestamp
   e: number    // end timestamp
   p?: number   // trade price (T events use p instead of c)

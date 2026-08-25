@@ -10,6 +10,7 @@ export interface MarketDataRow {
   Low: number;
   Close: number;
   Volume: number;
+  Vwap: number | null;
   Transactions: number | null;
   CreatedAt: string;
 }
@@ -23,6 +24,7 @@ export interface BarInput {
   low: number;
   close: number;
   volume: number;
+  vwap?: number;
   transactions?: number;
 }
 
@@ -58,9 +60,9 @@ export class MarketDataRepository extends BaseRepository {
       // random-UUID page churn).
       const stmt = db.prepare(`
         INSERT OR ${onConflict} INTO MarketData
-          (Ticker, Timespan, Timestamp, Open, High, Low, Close, Volume, Transactions, CreatedAt)
+          (Ticker, Timespan, Timestamp, Open, High, Low, Close, Volume, Vwap, Transactions, CreatedAt)
         VALUES
-          (@ticker, @timespan, @timestamp, @open, @high, @low, @close, @volume, @transactions, @createdAt)
+          (@ticker, @timespan, @timestamp, @open, @high, @low, @close, @volume, @vwap, @transactions, @createdAt)
       `);
 
       for (const bar of persistable) {
@@ -73,6 +75,7 @@ export class MarketDataRepository extends BaseRepository {
           low: bar.low,
           close: bar.close,
           volume: bar.volume,
+          vwap: bar.vwap ?? null,
           transactions: bar.transactions ?? null,
           createdAt: now,
         });
@@ -142,6 +145,21 @@ export class MarketDataRepository extends BaseRepository {
       { ticker, timespan },
     );
     return result[0]?.ts ?? null;
+  }
+
+  /**
+   * Fetch the single most recent stored bar (full row, incl. Vwap) for a
+   * ticker/timespan. Used to detect whether a series still needs its Vwap
+   * backfilled from the aggregate feed. Returns null when the series is empty.
+   */
+  getLatestBar(ticker: string, timespan: string): MarketDataRow | null {
+    const rows = this.executeQuery<MarketDataRow>(
+      `SELECT * FROM MarketData
+       WHERE Ticker = @ticker AND Timespan = @timespan
+       ORDER BY Timestamp DESC LIMIT 1`,
+      { ticker, timespan },
+    );
+    return rows[0] ?? null;
   }
 
   /**
@@ -216,7 +234,7 @@ export class MarketDataRepository extends BaseRepository {
     ticker: string,
     timespan: string,
     timestamp: number,
-    fields: { open?: number; high?: number; low?: number; close?: number; volume?: number; transactions?: number | null },
+    fields: { open?: number; high?: number; low?: number; close?: number; volume?: number; vwap?: number | null; transactions?: number | null },
   ): number {
     const sets: string[] = [];
     const params: Record<string, unknown> = { ticker, timespan, timestamp };
@@ -225,6 +243,7 @@ export class MarketDataRepository extends BaseRepository {
     if (fields.low !== undefined) { sets.push('Low = @low'); params.low = fields.low; }
     if (fields.close !== undefined) { sets.push('Close = @close'); params.close = fields.close; }
     if (fields.volume !== undefined) { sets.push('Volume = @volume'); params.volume = fields.volume; }
+    if (fields.vwap !== undefined) { sets.push('Vwap = @vwap'); params.vwap = fields.vwap; }
     if (fields.transactions !== undefined) { sets.push('Transactions = @transactions'); params.transactions = fields.transactions; }
     if (sets.length === 0) return 0;
     const result = this.executeRun(

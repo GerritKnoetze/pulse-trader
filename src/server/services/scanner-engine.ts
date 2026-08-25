@@ -24,7 +24,9 @@ import { getSnapshotCache } from './snapshot-cache'
 import { getCandleCache } from './candle-cache'
 import { computeTA, computeRVOL, computeFTFC, computeMtfState, computeCcCodes, computePattern, aggregateTo5min, aggregateTo15min, aggregateTo30min, aggregateTo60min, type TodaySnap } from './ta-calculator'
 import { getWsRelay } from './ws-relay'
-import { getOrSyncDailyBars, getOrSyncMinuteBars, getOrSyncFiveMinuteBars, getOrSyncTenSecondBars, persistMinuteBar, persistTenSecondBar, TEN_SEC_BUFFER, RateLimitError } from './market-data.service'
+import { getOrSyncDailyBars, getOrSyncMinuteBars, getOrSyncFiveMinuteBars, getOrSyncTenSecondBars, persistMinuteBar, persistTenSecondBar, TEN_SEC_BUFFER, RateLimitError, needsSeriesVwapBackfill, barPeriodMs } from './market-data.service'
+import { attachIndicators, type IndicatorValues } from '../../app/utils/indicators'
+import { enrichIndicatorSeries } from './indicator-enrich.service'
 import { getMetrics } from './metrics'
 import { isMarketSession, etDateString } from '../utils/et-time'
 import { appLog } from './app-log'
@@ -151,11 +153,16 @@ class ScannerEngine {
         appLog('WS connected — live ticks active', 'info',
           `Subscriptions: ${getWsRelay().getSubscriptionCount()} channels | SSE clients: ${this.sseClients.size} | RowCache: ${this.rowCache.size} rows`)
         this.broadcastStatus(status)
+        // Scan rows got wsActive=false before the async handshake finished —
+        // flip them to live now that the relay is connected and subscribed.
+        this.refreshWsActive()
       } else if (status === 'error') {
         appLog('WS error — check API key / network', 'error',
           `SSE clients: ${this.sseClients.size} | RowCache: ${this.rowCache.size} rows (stale) | Check API key in Settings → Data Provider`)
         this.broadcastStatus(status)
+        this.refreshWsActive()
       } else if (status === 'disconnected') {
+        this.refreshWsActive()
         disconnectLogTimer = setTimeout(() => {
           disconnectLogTimer = null
           appLog('WS disconnected', 'warn',
@@ -365,7 +372,7 @@ class ScannerEngine {
         getCandleCache().set(symbol, 'minute', minuteBars)
         counts.minute = minuteBars.length
         this.lastSentBar.set(`${symbol}:minute`, minuteBars[minuteBars.length - 1]!.timestamp)
-        this.broadcastBars(symbol, 'minute', minuteBars)
+        this.broadcastBars(symbol, 'minute', enrichIndicatorSeries(symbol, 'minute', minuteBars))
       }
     } catch { /* non-critical */ }
 
@@ -375,7 +382,7 @@ class ScannerEngine {
         getCandleCache().set(symbol, '5min', fiveBars)
         counts.fiveMin = fiveBars.length
         this.lastSentBar.set(`${symbol}:5min`, fiveBars[fiveBars.length - 1]!.timestamp)
-        this.broadcastBars(symbol, '5min', fiveBars)
+        this.broadcastBars(symbol, '5min', enrichIndicatorSeries(symbol, '5min', fiveBars))
       }
     } catch { /* non-critical */ }
 
@@ -385,7 +392,7 @@ class ScannerEngine {
         getCandleCache().set(symbol, 'day', dailyBars)
         counts.day = dailyBars.length
         this.lastSentBar.set(`${symbol}:day`, dailyBars[dailyBars.length - 1]!.timestamp)
-        this.broadcastBars(symbol, 'day', dailyBars)
+        this.broadcastBars(symbol, 'day', enrichIndicatorSeries(symbol, 'day', dailyBars))
       }
     } catch { /* non-critical */ }
 
@@ -439,6 +446,28 @@ class ScannerEngine {
   }
 
   /**
+   * Which bars of a just-refreshed series to broadcast to open charts.
+   *
+   * Only CLOSED bars are ever sent — the in-progress (forming) candle is built
+   * live on the client from the WS tape, so the server never injects a partial
+   * candle. A bar is "closed" once its whole period has elapsed
+   * (`timestamp + period <= now`), at which point it carries authoritative OHLC.
+   *
+   * Because the watermark is kept at the last CLOSED bar's timestamp, every new
+   * closed bar is strictly `> last` and is broadcast exactly once — no flat-candle
+   * gap from a strict `>` filter, and no re-sending a forming candle each refresh.
+   */
+  private freshBars<T extends { timestamp: number }>(enriched: T[], last: number, timespan: string): T[] {
+    const period = barPeriodMs(timespan)
+    const now = Date.now()
+    const out: T[] = []
+    for (const b of enriched) {
+      if (b.timestamp > last && b.timestamp + period <= now) out.push(b)
+    }
+    return out
+  }
+
+  /**
    * Refetch each period-elapsed series for one watched symbol (updates
    * cache/DB) and broadcast only the newly completed bars as SSE events.
    */
@@ -448,12 +477,13 @@ class ScannerEngine {
     // separately by finalizeTenSecond.
     try {
       const { bars: tenBars, seeded } = await getOrSyncTenSecondBars(symbol)
+      const enriched = enrichIndicatorSeries(symbol, '10s', tenBars)
       const key = `${symbol}:10s`
       // A fresh seed must broadcast the FULL history — resetting the watermark
       // would otherwise filter it out because live buckets already advanced it.
       if (seeded) this.lastSentBar.set(key, 0)
       const last = this.lastSentBar.get(key) ?? 0
-      const fresh = tenBars.filter(b => b.timestamp > last)
+      const fresh = this.freshBars(enriched, last, '10s')
       if (fresh.length > 0) {
         this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
         this.broadcastBars(symbol, '10s', fresh)
@@ -462,10 +492,16 @@ class ScannerEngine {
 
     // 1-minute — the primary driver of chart updates.
     try {
+      // A pending vwap backfill rewrites the whole stored window with the feed's
+      // `vw` — reset the watermark so the FULL enriched series is pushed to the
+      // chart (otherwise the old NULL-vwap bars keep showing a gap).
+      const vwapPending = needsSeriesVwapBackfill(symbol, 'minute')
       const minuteBars = await this.getIntradayBars(symbol)
+      const enriched = enrichIndicatorSeries(symbol, 'minute', minuteBars)
       const key = `${symbol}:minute`
+      if (vwapPending) this.lastSentBar.set(key, 0)
       const last = this.lastSentBar.get(key) ?? 0
-      const fresh = minuteBars.filter(b => b.timestamp > last)
+      const fresh = this.freshBars(enriched, last, 'minute')
       if (fresh.length > 0) {
         this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
         this.broadcastBars(symbol, 'minute', fresh)
@@ -474,10 +510,13 @@ class ScannerEngine {
 
     // 5-minute — internally period-gated, so it only fetches when a 5m bucket elapsed.
     try {
+      const vwapPending = needsSeriesVwapBackfill(symbol, '5min')
       const fiveBars = await this.getFiveMinuteBars(symbol)
+      const enriched = enrichIndicatorSeries(symbol, '5min', fiveBars)
       const key = `${symbol}:5min`
+      if (vwapPending) this.lastSentBar.set(key, 0)
       const last = this.lastSentBar.get(key) ?? 0
-      const fresh = fiveBars.filter(b => b.timestamp > last)
+      const fresh = this.freshBars(enriched, last, '5min')
       if (fresh.length > 0) {
         this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
         this.broadcastBars(symbol, '5min', fresh)
@@ -489,10 +528,13 @@ class ScannerEngine {
     if (this.lastDailyDay.get(symbol) !== day) {
       this.lastDailyDay.set(symbol, day)
       try {
+        const vwapPending = needsSeriesVwapBackfill(symbol, 'day')
         const dailyBars = await this.getDailyBars(symbol)
+        const enriched = enrichIndicatorSeries(symbol, 'day', dailyBars)
         const key = `${symbol}:day`
+        if (vwapPending) this.lastSentBar.set(key, 0)
         const last = this.lastSentBar.get(key) ?? 0
-        const fresh = dailyBars.filter(b => b.timestamp > last)
+        const fresh = this.freshBars(enriched, last, 'day')
         if (fresh.length > 0) {
           this.lastSentBar.set(key, fresh[fresh.length - 1]!.timestamp)
           this.broadcastBars(symbol, 'day', fresh)
@@ -501,12 +543,18 @@ class ScannerEngine {
     }
   }
 
-  private broadcastBars(symbol: string, timespan: string, bars: BarInput[]): void {
+  private broadcastBars(symbol: string, timespan: string, bars: Array<BarInput & Partial<IndicatorValues>>): void {
     const payload = {
       type: 'bars',
       symbol,
       timespan,
-      bars: bars.map(b => ({ t: b.timestamp, o: b.open, h: b.high, l: b.low, c: b.close, v: b.volume })),
+      bars: bars.map(b => ({
+        t: b.timestamp, o: b.open, h: b.high, l: b.low, c: b.close, v: b.volume,
+        ema9: b.ema9, ema20: b.ema20, ema200: b.ema200,
+        ema12: b.ema12, ema26: b.ema26,
+        macd: b.macd, macdSignal: b.macdSignal, macdHist: b.macdHist,
+        vwap: b.vwap,
+      })),
     }
     for (const writer of this.sseClients.values()) {
       try { writer(payload) } catch { /* ignore disconnected clients */ }
@@ -759,6 +807,25 @@ class ScannerEngine {
     return relay.getStatus() === 'connected' && relay.isSubscribed(symbol)
   }
 
+  /**
+   * Re-evaluate every cached row's `wsActive` against the CURRENT relay state
+   * and push an SSE update for the rows whose flag changed. Called when the
+   * relay connects/disconnects so the grid's WS column reflects reality — a
+   * scan sets wsActive before the async WS handshake completes, which left rows
+   * showing "WS off" while the charts were already ticking.
+   */
+  private refreshWsActive(): void {
+    const relay = getWsRelay()
+    const connected = relay.getStatus() === 'connected'
+    for (const row of this.rowCache.values()) {
+      const active = connected && relay.isSubscribed(row.symbol)
+      if (row.wsActive !== active) {
+        row.wsActive = active
+        this.broadcastUpdate(row)
+      }
+    }
+  }
+
   private async getDailyBars(symbol: string): Promise<BarInput[]> {
     // L1: in-memory CandleCache — serve if fresh for the daily period (24 h) or
     // the market is closed (no new candle to fetch).
@@ -829,6 +896,7 @@ class ScannerEngine {
         low: tick.l,
         close: tick.c,
         volume: tick.v,
+        vwap: tick.vw ?? undefined,
       }
       getCandleCache().appendBar(sym, 'minute', bar)
       try { persistMinuteBar(bar) } catch { /* non-critical */ }
@@ -869,6 +937,8 @@ class ScannerEngine {
     if (row) {
       row.last = Math.round(price * 100) / 100
       row.ts = tick.s || tick.e || Date.now()
+      // A received tick is definitive proof this symbol is WS-streaming.
+      if (!row.wsActive) row.wsActive = true
       // Recompute change$ and change% from the stored previous-day close
       if (state.prevDayClose) {
         const diff = price - state.prevDayClose
@@ -886,6 +956,11 @@ class ScannerEngine {
         row.day.l = Math.min(row.day.l, price)
         row.day.c = price
       }
+      // Live session VWAP from the feed — `a` is TODAY's volume-weighted
+      // average price (session VWAP); `vw` is only the per-tick VWAP. The
+      // forming candle reads this to keep the VWAP overlay exact.
+      if (tick.a) row.vw = tick.a
+      else if (tick.vw) row.vw = tick.vw
       if (tick.ev === 'AM') {
         row.mtf['1']  = state['1']
         row.mtf['5']  = state['5']
@@ -923,12 +998,14 @@ class ScannerEngine {
         low: tick.l,
         close: tick.c,
         volume: tick.v,
+        vwap: tick.vw ?? undefined,
       })
     } else if (existing.timestamp === bucketStart) {
       existing.high = Math.max(existing.high, tick.h)
       existing.low = Math.min(existing.low, tick.l)
       existing.close = tick.c
       existing.volume += tick.v
+      if (tick.vw) existing.vwap = tick.vw
     }
   }
 
@@ -944,7 +1021,9 @@ class ScannerEngine {
     // Keep the watermark in sync so the background seed refresh never re-broadcasts
     // a live bucket that was already pushed.
     this.lastSentBar.set(`${sym}:10s`, bar.timestamp)
-    this.broadcastBars(sym, '10s', [bar])
+    const enriched = attachIndicators(cache)
+    const lastBar = enriched[enriched.length - 1]
+    if (lastBar) this.broadcastBars(sym, '10s', [lastBar])
   }
 
   private broadcastUpdate(row: ScannerRow): void {

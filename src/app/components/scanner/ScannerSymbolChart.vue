@@ -4,6 +4,7 @@ import type { ShallowRef } from 'vue'
 import PulseChartPanel from '~/components/chart/PulseChartPanel.vue'
 import ChartToolbar from '~/components/chart/ChartToolbar.vue'
 import type { OHLCBar, BarMarker } from '~/components/chart/PulseChart.vue'
+import { extendIndicators } from '~/utils/indicators'
 import { subscribeBars, type BarsEvent } from '~/composables/useScanner'
 import { useScanner } from '~/composables/useScanner'
 import { useChartTabs } from '~/composables/useChartTabs'
@@ -138,8 +139,28 @@ function computeMarkers(data: OHLCBar[]): BarMarker[] {
 }
 
 // ── API response types ────────────────────────────────────────────────────────
-interface ApiBar   { t: number; o: number; h: number; l: number; c: number; v: number }
+// The data service attaches indicator values to every bar (initial REST-backed
+// load + live SSE updates), so the chart just maps them through to the panels.
+interface ApiBar {
+  t: number; o: number; h: number; l: number; c: number; v: number
+  ema9?: number; ema20?: number; ema200?: number
+  ema12?: number; ema26?: number
+  macd?: number; macdSignal?: number; macdHist?: number
+  vwap?: number
+}
 interface BarsResp { symbol: string; bars: Record<string, ApiBar[]> }
+
+function toOHLC(b: ApiBar): OHLCBar {
+  return {
+    time:  Math.floor(b.t / 1000),
+    open:  b.o, high: b.h, low: b.l, close: b.c,
+    volume: b.v,
+    ema9: b.ema9, ema20: b.ema20, ema200: b.ema200,
+    ema12: b.ema12, ema26: b.ema26,
+    macd: b.macd, macdSignal: b.macdSignal, macdHist: b.macdHist,
+    vwap: b.vwap,
+  }
+}
 
 async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
   const data = await $fetch<BarsResp>(
@@ -149,9 +170,7 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
   const out: Record<string, OHLCBar[]> = {}
   for (const [key, arr] of Object.entries(data.bars)) {
     if (arr.length > 0) {
-      out[key] = arr
-        .sort((a, b) => a.t - b.t)
-        .map(b => ({ time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c }))
+      out[key] = arr.sort((a, b) => a.t - b.t).map(toOHLC)
     }
   }
   return out
@@ -160,12 +179,16 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
 // ── Today's partial daily bar from the row's session `day` data ───────────────
 // The D-bar DB only contains closed sessions. Today's bar comes from the row's
 // `day {o,h,l,c}` (seeded from the market snapshot, kept live from WS ticks) —
-// no derivation from the 1-minute series.
-function todayBarFromRow(): OHLCBar | null {
+// no derivation from the 1-minute series. Indicator values are extended from the
+// previous closed daily bar so the overlay lines reach the right edge on load.
+function todayBarFromRow(prev?: OHLCBar): OHLCBar | null {
   const day = currentRow.value?.day
   if (!day || day.o <= 0) return null
   const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
-  return { time: todaySec, open: day.o, high: day.h, low: day.l, close: day.c }
+  return {
+    time: todaySec, open: day.o, high: day.h, low: day.l, close: day.c,
+    ...extendIndicators(prev, day.c, currentRow.value?.vw),
+  }
 }
 
 // ── Build chart data ──────────────────────────────────────────────────────────
@@ -181,7 +204,7 @@ async function buildCharts(): Promise<void> {
     const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
     const lastDTs  = realBars['D'][realBars['D'].length - 1]!.time
     if (lastDTs < todaySec) {
-      const todayBar = todayBarFromRow()
+      const todayBar = todayBarFromRow(realBars['D'][realBars['D'].length - 1]!)
       if (todayBar) realBars['D'] = [...realBars['D'], todayBar]
     }
   }
@@ -229,7 +252,7 @@ function applyToPanel(key: Panel['key'], bars: ApiBar[]): boolean {
   if (!cur.length || bars.length > cur.length) {
     // First data, or a full-series backfill (e.g. the 10s history seed arriving
     // after a few live buckets) — adopt the incoming series wholesale.
-    const adopted = bars.map(b => ({ time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c }))
+    const adopted = bars.map(toOHLC)
     panelBars[idx]!.value = adopted
     panelMarkers[idx]!.value = computeMarkers(adopted)
     return true
@@ -240,10 +263,10 @@ function applyToPanel(key: Panel['key'], bars: ApiBar[]): boolean {
     const t = Math.floor(b.t / 1000)
     const last = out[out.length - 1]!
     if (t > last.time) {
-      out.push({ time: t, open: b.o, high: b.h, low: b.l, close: b.c })
+      out.push(toOHLC(b))
       changed = true
     } else if (t === last.time) {
-      out[out.length - 1] = { time: t, open: b.o, high: b.h, low: b.l, close: b.c }
+      out[out.length - 1] = toOHLC(b)
       changed = true
     }
   }
@@ -267,14 +290,14 @@ function applyDayHistory(bars: ApiBar[]): void {
   // Incoming closed bars from the data layer (server never stores today).
   const incoming = bars
     .filter(b => Math.floor(b.t / 1000) < todaySec)
-    .map(b => ({ time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c }))
+    .map(toOHLC)
   if (incoming.length === 0 && base.length === 0) return
   // Union by timestamp — newer values replace equal timestamps.
   const byTime = new Map<number, OHLCBar>()
   for (const b of base) byTime.set(b.time, b)
   for (const b of incoming) byTime.set(b.time, b)
   const merged = [...byTime.values()].sort((a, b) => a.time - b.time)
-  const todayBar = todayBarFromRow()
+  const todayBar = todayBarFromRow(merged[merged.length - 1])
   const out = todayBar ? [...merged, todayBar] : merged
   panelBars[idxD]!.value = out
   panelMarkers[idxD]!.value = computeMarkers(out)
@@ -321,13 +344,21 @@ watch(currentRow, (newRow) => {
     if (panel.key === 'D') {
       const day = newRow.day
       if (day && day.o > 0) {
-        const todayBar = { time: todaySec, open: day.o, high: day.h, low: day.l, close: livePrice }
+        // Indicator values are extended from the previous CLOSED daily bar (the
+        // bar before today's) so the overlay lines stay live at the right edge.
+        const lb = arr[arr.length - 1]
+        const prev = lb && lb.time >= todaySec
+          ? (arr.length > 1 ? arr[arr.length - 2] : undefined)
+          : lb
+        const todayBar: OHLCBar = {
+          time: todaySec, open: day.o, high: day.h, low: day.l, close: livePrice,
+          ...extendIndicators(prev, livePrice, newRow.vw),
+        }
         if (!arr.length) {
           panelBars[idx]!.value = [todayBar]
         } else {
-          const lb = arr[arr.length - 1]!
-          if (lb.time < todaySec) panelBars[idx]!.value = [...arr, todayBar]
-          else if (lb.time === todaySec) panelBars[idx]!.value = [...arr.slice(0, -1), todayBar]
+          if (lb!.time < todaySec) panelBars[idx]!.value = [...arr, todayBar]
+          else if (lb!.time === todaySec) panelBars[idx]!.value = [...arr.slice(0, -1), todayBar]
         }
       }
       return
@@ -345,11 +376,23 @@ watch(currentRow, (newRow) => {
       // Last bar is a completed candle — start a fresh forming candle for the
       // current period (only the tick-driven panels).
       if (panel.key === '1' || panel.key === '5' || panel.key === '10s') {
-        panelBars[idx]!.value = [...arr, { time: rolloverTime, open: livePrice, high: livePrice, low: livePrice, close: livePrice }]
+        const fresh: OHLCBar = {
+          time: rolloverTime, open: livePrice, high: livePrice, low: livePrice, close: livePrice,
+          ...extendIndicators(lb, livePrice, newRow.vw),
+        }
+        panelBars[idx]!.value = [...arr, fresh]
       }
     } else {
-      // Last bar is the current forming candle — patch H/L/C from the live price.
-      panelBars[idx]!.value = [...arr.slice(0, -1), { time: lb.time, open: lb.open, high: Math.max(lb.high, livePrice), low: Math.min(lb.low, livePrice), close: livePrice }]
+      // Last bar is the current forming candle — patch H/L/C from the live price
+      // and extend the indicator values from the previous completed bar.
+      const prev = arr.length > 1 ? arr[arr.length - 2] : undefined
+      const patched: OHLCBar = {
+        time: lb.time, open: lb.open,
+        high: Math.max(lb.high, livePrice), low: Math.min(lb.low, livePrice),
+        close: livePrice,
+        ...extendIndicators(prev, livePrice, newRow.vw),
+      }
+      panelBars[idx]!.value = [...arr.slice(0, -1), patched]
     }
   })
 }, { deep: false })
