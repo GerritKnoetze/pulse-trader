@@ -10,6 +10,7 @@ import {
 } from '@heroicons/vue/24/outline'
 import { useScanCriteria } from '~/composables/useScanCriteria'
 import { useStratSetups } from '~/composables/useStratSetups'
+import { useScannerAlerts } from '~/composables/useScannerAlerts'
 
 const props = defineProps<{
   activePanel: 'columns' | 'layouts' | 'my-filters' | 'criteria' | 'setups' | 'alerts' | null
@@ -20,7 +21,8 @@ const emit = defineEmits<{
 }>()
 
 const { activeCount: criteriaCount } = useScanCriteria()
-const { setupBadgeCount, alertBadgeCount, unreadAlertCount } = useStratSetups()
+const { setupBadgeCount } = useStratSetups()
+const { alertBadgeCount } = useScannerAlerts()
 const isMounted = ref(false)
 onMounted(() => { isMounted.value = true })
 </script>

@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import { ArrowLeftIcon } from '@heroicons/vue/24/outline'
 import { useScanner } from '~/composables/useScanner'
 import { useToast } from '~/composables/useToast'
-import { useStratSetups } from '~/composables/useStratSetups'
 import { useChartTabs } from '~/composables/useChartTabs'
 import type { StratSetup } from '~/types/scanner'
 
@@ -12,7 +11,6 @@ const emit  = defineEmits<{ back: [] }>()
 
 const { rows } = useScanner()
 const toast = useToast()
-const { armPriceAlert, isAlertArmed } = useStratSetups()
 const { openTab } = useChartTabs()
 
 function openChart() {
@@ -24,8 +22,6 @@ const currentPrice = computed(() => {
   const row = rows.value.find(r => r.symbol === props.setup.symbol)
   return row?.last ?? null
 })
-
-const alertArmed = computed(() => isAlertArmed(props.setup))
 
 // ── Checklist step states ─────────────────────────────────────────────────────
 
@@ -81,30 +77,6 @@ function copyTradeParams() {
   navigator.clipboard.writeText(text)
     .then(() => toast.success('Trade params copied to clipboard'))
     .catch(() => toast.error('Clipboard unavailable'))
-}
-
-async function setAlert() {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
-    toast.warning('Browser notifications not supported')
-    return
-  }
-
-  // Request permission if not yet granted
-  if (Notification.permission === 'default') {
-    const perm = await Notification.requestPermission()
-    if (perm !== 'granted') {
-      toast.warning('Notification permission denied — alert will still appear in the Alerts drawer')
-    }
-  } else if (Notification.permission === 'denied') {
-    toast.warning('Notifications blocked — alert will still appear in the Alerts drawer')
-  }
-
-  const result = armPriceAlert(props.setup)
-  if (result === 'already-armed') {
-    toast.info(`Alert already armed for ${props.setup.symbol} at $${fmt(props.setup.entryPrice)}`)
-  } else {
-    toast.success(`Alert armed — watching ${props.setup.symbol} for break ${props.setup.direction === 'long' ? 'above' : 'below'} $${fmt(props.setup.entryPrice)}`)
-  }
 }
 </script>
 
@@ -214,11 +186,6 @@ async function setAlert() {
     <!-- Actions -->
     <div class="checklist-actions">
       <button class="action-btn" @click="openChart">📈 Open Chart</button>
-      <button
-        class="action-btn"
-        :class="{ 'action-btn--armed': alertArmed }"
-        @click="setAlert"
-      >{{ alertArmed ? '🔔 Alert Armed' : '🔔 Set Alert' }}</button>
       <button class="action-btn" @click="copyTradeParams">📋 Copy Params</button>
     </div>
   </div>

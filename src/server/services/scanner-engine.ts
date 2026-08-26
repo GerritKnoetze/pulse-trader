@@ -79,14 +79,6 @@ class ScannerEngine {
   // SSE clients
   private sseClients = new Map<string, SseWriter>()
 
-  // Alert deduplication: key = `${symbol}-${signalTf}-${combo}`
-  private alertsSent = new Set<string>()
-
-  // Alerts are DISABLED for now (2026-08-21) to reduce noise while the data
-  // layer is the focus. All alert code remains in place — flip `alertsEnabled`
-  // to `true` to re-enable setup-alert emission (SSE `setupAlert` frames).
-  private readonly alertsEnabled = false
-
   // Intraday data from WS (updated every tick)
   private intraday = new Map<string, IntradayState>()
 
@@ -754,7 +746,6 @@ class ScannerEngine {
           const setup = scoreSetup(row, tfBars, tf, tfPattern)
           if (setup) {
             row.setup = setup
-            this.maybeAlert(setup)
             break
           }
         }
@@ -1045,25 +1036,6 @@ class ScannerEngine {
     for (const writer of this.sseClients.values()) {
       try { writer(payload) } catch { /* ignore disconnected clients */ }
     }
-  }
-
-  private broadcastSetupAlert(setup: StratSetup): void {
-    const payload = { type: 'setupAlert', setup }
-    for (const writer of this.sseClients.values()) {
-      try { writer(payload) } catch { /* ignore disconnected clients */ }
-    }
-  }
-
-  private maybeAlert(setup: StratSetup): void {
-    // Disabled for now — see `alertsEnabled` above.
-    if (!this.alertsEnabled) return
-    // Only alert on high-quality setups
-    if (setup.quality !== 'A+' && setup.quality !== 'A') return
-    const key = `${setup.symbol}-${setup.signalTf}-${setup.combo}`
-    if (this.alertsSent.has(key)) return
-    this.alertsSent.add(key)
-    setup.alertSent = true
-    this.broadcastSetupAlert(setup)
   }
 
   // ── Private: WS subscription management ──────────────────────────────────

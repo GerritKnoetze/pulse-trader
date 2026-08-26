@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue'
-import type { ScannerRow, ScannerMode, SortDirection, QuickFilter, StratSetup } from '~/types/scanner'
+import type { ScannerRow, ScannerMode, SortDirection, QuickFilter } from '~/types/scanner'
 import { useScanCriteria } from '~/composables/useScanCriteria'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -67,8 +67,21 @@ const wsStatus           = ref<'disconnected' | 'connecting' | 'connected' | 'er
 // Tracks the *server-side* WS relay status (pushed via SSE messages).
 // Separate from wsStatus which only reflects the EventSource connection.
 const serverWsStatus     = ref<'disconnected' | 'connecting' | 'authenticating' | 'connected' | 'error'>('disconnected')
-// Latest setup alerts pushed by the server for A+/A setups.
-const latestSetupAlert   = ref<StratSetup | null>(null)
+
+// ── Alert-frame pub/sub (the scanner alerts store subscribes; new server-side
+//    alert logic emits `{ type: 'alert' }` frames through this channel) ────────
+
+export interface ScannerAlertFrame {
+  type: 'alert'
+  alert: { title: string; message?: string; level?: string }
+}
+type AlertFrameHandler = (frame: ScannerAlertFrame) => void
+let alertFrameHandler: AlertFrameHandler | null = null
+
+/** Register the handler that receives `alert` frames pushed over SSE. */
+export function registerAlertFrameHandler(h: AlertFrameHandler): void {
+  alertFrameHandler = h
+}
 
 let eventSource: EventSource | null = null
 let scanDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -267,7 +280,7 @@ function connectLive() {
         | { type: 'update'; row: ScannerRow }
         | { type: 'rowRemoved'; symbol: string }
         | { type: 'wsStatus'; status: string }
-        | { type: 'setupAlert'; setup: StratSetup }
+        | ScannerAlertFrame
         | BarsEvent
 
       if (msg.type === 'snapshot') {
@@ -288,8 +301,8 @@ function connectLive() {
         rows.value = rows.value.filter(r => r.symbol !== msg.symbol)
       } else if (msg.type === 'wsStatus') {
         serverWsStatus.value = msg.status as typeof serverWsStatus.value
-      } else if (msg.type === 'setupAlert') {
-        latestSetupAlert.value = msg.setup
+      } else if (msg.type === 'alert') {
+        alertFrameHandler?.(msg)
       } else if (msg.type === 'bars') {
         // New candles from the data layer — fan out to chart subscribers.
         for (const h of barsHandlers) h(msg)
@@ -336,7 +349,7 @@ export function useScanner() {
     mode, activeQuickFilter, sortKey, sortDir,
     rows, isScanning, scanError, total, universeCount, lastScan,
     nextCursor, isLoadingMore, visible, secondsToNextScan,
-    wsStatus, serverWsStatus, latestSetupAlert,
+    wsStatus, serverWsStatus,
     filteredRows, totalCount, showingCount,
     allRows: rows,
     initScanner, setMode, toggleQuickFilter, clearFilters, setSortBy,

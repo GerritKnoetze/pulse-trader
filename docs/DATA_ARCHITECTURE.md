@@ -689,7 +689,7 @@ updates. A 25 s named `ping` keeps the proxy connection alive.
 | `rowRemoved` | `{ symbol }` | When a row fails the authoritative minRvol filter and is dropped |
 | `bars` | `{ symbol, timespan, bars[] }` | Newly completed candles for watched chart symbols (10s/minute/5min/day deltas) |
 | `wsStatus` | `{ status }` | On relay state changes + on connect |
-| `setupAlert` | `{ setup: StratSetup }` | When an A+/A setup is first detected — **DISABLED** (server gate `alertsEnabled = false`, 2026-08-21); code retained |
+| `alert` | `{ alert: { title, message?, level? } }` | **Clean slate (2026-08-26)** — no server publisher yet; the client defines + subscribes to this generic frame (`registerAlertFrameHandler`) so new alert logic can emit it later |
 | `ping` | `'ping'` (named event) | Every 25 s — ignored by `EventSource.onmessage` |
 
 ### SSE client lifecycle
@@ -698,7 +698,7 @@ updates. A 25 s named `ping` keeps the proxy connection alive.
 EventSource connects → engine.addSseClient(id, write)
                      → push snapshot (current rowCache) + current wsStatus
 ... live updates stream via broadcastUpdate / broadcastRowRemoved / broadcastStatus /
-    broadcastSetupAlert (disabled) / broadcastBars ...
+    broadcastBars ...
 EventSource closes → stream.onClosed → clear ping → engine.removeSseClient(id)
 ```
 
@@ -828,9 +828,15 @@ non-empty), merges `update` rows by symbol (upsert), removes `rowRemoved` symbol
   and subscribes to SSE `bars` events (`subscribeBars`) for new-candle pushes (10s via live buckets,
   minute/5min/day via period refresh).
 - `useStratSetups.ts` derives live setups from `row.setup` on scanned rows and powers the Setups drawer
-  (filter by quality, sort by R:R / ATR risk, checklist). The alerts system (drawer, armed price alerts,
-  setupAlert SSE) is **DISABLED** (2026-08-21): the server's `maybeAlert` is gated by `alertsEnabled =
-  false`, so no `setupAlert` frames fire — but all alert code is retained for re-enable.
+  (filter by quality, sort by R:R / ATR risk, checklist).
+- Alerts are a **clean slate** (2026-08-26): the alert mechanism was kept but all specific alert logic
+  was removed. `useScannerAlerts.ts` is the generic store (`pushAlert()` → toast + browser notification,
+  badge/unread counts, dismiss/read/clear actions); `useScanner.ts` carries a generic `alert` SSE frame
+  (`registerAlertFrameHandler`) with no server publisher yet. The old setup-specific logic was removed:
+  server `maybeAlert` / `broadcastSetupAlert` / `alertsEnabled` gate / `alertsSent` / `StratSetup.alertSent`,
+  and client `latestSetupAlert` / `setupAlert` handler, `armPriceAlert()` / `isAlertArmed()`, and the
+  Set-Alert button. New alert logic plugs in via `useScannerAlerts().pushAlert({...})` (client) or an
+  SSE `{ type: 'alert', alert: {...} }` frame (server).
 - `useChartTabs.ts` / `useChartSync.ts` manage multi-tab charts and cross-chart cursor sync.
 - **Data Management view** (`/data`, `src/app/composables/useDataManager.ts`) provides L1/L2/L3 oversight:
   overview, cache inspection, DB series → ET-day batch drill → row CRUD, cache refresh/flush, DB flush,
@@ -1374,9 +1380,8 @@ pending `next_url`, or a short-fall vs `resultsCount` — partial results are ne
 - `rowCache` never expires — a symbol scanned once stays stale until the next scan touches it
   (`scanner-engine.ts:75`).
 - `enrichedSymbols`, `rejectedSymbols`, `avgVol30Cache`, `lastSentBar`, `lastDailyDay` grow with distinct
-  symbols across the server lifetime.
-- `alertsSent` still grows too, but since `alertsEnabled = false` (alerts disabled 2026-08-21) it never
-  gets new entries while the gate is off — re-enabling alerts should pair with a cap/prune.
+  symbols across the server lifetime. (The former `alertsSent` dedup set was removed 2026-08-26 with the
+  alert clean-slate refactor.)
 
 **Target:** rowCache TTL / generation-based invalidation on criteria change; cap/prune the auxiliary
 symbol maps.
@@ -1452,9 +1457,10 @@ contracts to preserve.
 
 3. **Live feed is now always on (2026-08-21).** The `runtimeConfig.public.liveFeedEnabled` switch was
    **removed** — the WS tick handler is always wired and `updateWsSubscriptions` always subscribes
-   (relay connects on demand). The `.env` `LIVE_FEED_ENABLED` flag is ignored. Alerts (setupAlert SSE,
-   alert drawer, armed price alerts) are **disabled** (server gate `alertsEnabled = false`) to reduce
-   noise while the data layer is the focus — the code is retained and re-enablable. Revisit: validate
+   (relay connects on demand). The `.env` `LIVE_FEED_ENABLED` flag is ignored. Alerts are a **clean slate**
+   (2026-08-26): the alert mechanism (drawer, badge, generic `alert` SSE frame) was kept, but all
+   setup-specific alert logic was removed (server `alertsEnabled` gate, `maybeAlert`, `setupAlert` frame,
+   `StratSetup.alertSent`, client armed-price alerts). New alert logic is unimplemented. Revisit: validate
    reconnect gap-repair + tick accuracy against the real feed.
 
 4. **Trading methodology is expanding beyond The Strat.** Pulse Trader's scanner logic was built

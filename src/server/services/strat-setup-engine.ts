@@ -222,6 +222,5 @@ export function scoreSetup(
     inForce:         row.inForce,
     ftfc:            row.ftfc,
     detectedAt:      new Date().toISOString(),
-    alertSent:       false,
   }
 }

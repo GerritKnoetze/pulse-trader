@@ -24,7 +24,6 @@ export interface StratSetup {
   inForce:         boolean
   ftfc:            boolean
   detectedAt:      string
-  alertSent:       boolean
 }
 
 /** Scan criteria sent to the server to filter the full-market snapshot */
