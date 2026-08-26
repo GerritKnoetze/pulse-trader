@@ -12,6 +12,14 @@ const props = defineProps<{
   bars:        OHLCBar[]
   markers:     BarMarker[]
   isDemo:      boolean
+  loadMoreBusy?: boolean
+  loadMoreExhausted?: boolean
+  maximized?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'load-more', payload: { before: number }): void
+  (e: 'maximize'): void
 }>()
 
 // ── Indicator overlay toggles (per-timeframe state, persisted) ───────────────
@@ -22,6 +30,8 @@ const DEFAULT_OVERLAYS: ChartOverlays = {
   vwap: false,
   volume: true,
   macd: false,
+  dayStart: false,
+  sessions: false,
 }
 
 function storageKey(): string {
@@ -54,7 +64,9 @@ function toggleOverlay(id: OverlayId): void {
       :label="label"
       :is-demo="isDemo"
       :overlays="overlays"
+      :maximized="maximized"
       @toggle-overlay="toggleOverlay"
+      @maximize="emit('maximize')"
     />
     <PulseChart
       class="panel-chart"
@@ -63,6 +75,9 @@ function toggleOverlay(id: OverlayId): void {
       :time-visible="timeVisible"
       :show-seconds="showSeconds"
       :overlays="overlays"
+      :load-more-busy="loadMoreBusy"
+      :load-more-exhausted="loadMoreExhausted"
+      @load-more="emit('load-more', $event)"
     />
   </div>
 </template>

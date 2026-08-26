@@ -1,4 +1,5 @@
 import { getScannerEngine } from '../../services/scanner-engine'
+import { clearSymbolPruneCutoffs } from '../../services/market-data.service'
 
 /**
  * POST /api/scanner/chart-watch
@@ -19,7 +20,13 @@ export default defineEventHandler(async (event) => {
 
   const engine = getScannerEngine()
   if (action === 'watch') engine.watchSymbol(symbol)
-  else engine.unwatchSymbol(symbol)
+  else {
+    engine.unwatchSymbol(symbol)
+    // Session-scoped "load more" prune overrides live only while the chart is
+    // open — a fresh chart load returns to the default retention window until
+    // the user again requests more candles.
+    clearSymbolPruneCutoffs(symbol)
+  }
 
   return { success: true }
 })

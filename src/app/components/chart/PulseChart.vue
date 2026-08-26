@@ -15,6 +15,8 @@
  *   • Dirty-level RAF coalesces calls: level-1 (crosshair) never retriggers bars.
  */
 import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { etDayKeyMs } from '~/utils/indicators'
+import { etDate } from '~/utils/data-format'
 import { useChartSync } from '~/composables/useChartSync'
 import { useDrawingTools } from '~/composables/useDrawingTools'
 import { hlDrawings, hrDrawings, vlDrawings, rayDrawings, tlDrawings, allocDrawingId, subscribeDrawings, notifyDrawingsChanged } from '~/composables/useDrawings'
@@ -51,6 +53,9 @@ const OVERLAY = {
   volDn:  'rgba(242, 54, 69, 0.35)',
   macdUp: 'rgba(8, 153, 129, 0.7)',
   macdDn: 'rgba(242, 54, 69, 0.7)',
+  dayStart: '#3b82f6',
+  preMarket: '#b45309',
+  postMarket: '#6d28d9',
 } as const
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -85,6 +90,8 @@ export interface ChartOverlays {
   vwap: boolean
   volume: boolean
   macd: boolean
+  dayStart: boolean
+  sessions: boolean
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -96,12 +103,18 @@ const props = withDefaults(defineProps<{
   timeVisible?: boolean
   showSeconds?: boolean
   overlays?:    ChartOverlays
+  loadMoreBusy?: boolean
+  loadMoreExhausted?: boolean
 }>(), {
   markers:     () => [],
   timeVisible: false,
   showSeconds: false,
-  overlays:    () => ({ ema9: false, ema20: true, ema200: false, vwap: false, volume: true, macd: false }),
+  overlays:    () => ({ ema9: false, ema20: true, ema200: false, vwap: false, volume: true, macd: false, dayStart: false, sessions: false }),
+  loadMoreBusy: false,
+  loadMoreExhausted: false,
 })
+
+const emit = defineEmits<{ (e: 'load-more', payload: { before: number }): void }>()
 
 // ── Crosshair sync ────────────────────────────────────────────────────────────
 const { syncEnabled, syncTime, syncPrice, setSyncTime, setSyncPrice } = useChartSync()
@@ -167,6 +180,10 @@ let macdMax = 0
 // "snap to latest" arrow. Kept reactive so the button appears/disappears as the
 // user pans or the live candle advances.
 const canSnapToLatest = ref(false)
+
+// True when the viewport is panned to the LEFT-most loaded candle — shows the
+// "load more" button. Exhausted / busy states come from the parent.
+const canLoadMore = ref(false)
 
 // Reactive copy of the dynamic right price-axis width so the snap button sits
 // INSIDE the plot area (left of the gutter) rather than on top of it.
@@ -286,6 +303,9 @@ function resizeAll(): void {
   dpr = window.devicePixelRatio || 1
   csW = el.clientWidth
   csH = el.clientHeight
+  // Guard transient 0-size states (e.g. a panel hidden while another is
+  // maximized) — skip resizing so negative plot dims never enter the draw path.
+  if (csW <= 1 || csH <= 1) return
   plW = csW - PAW
   plH = csH - TAH
   computePanes()
@@ -458,6 +478,61 @@ function drawOverlayLine(
   c.restore()
 }
 
+// Session windows in ET minutes-since-midnight (matching Market Sessions & Times):
+//   pre-market 04:00–09:30, post/after-hours 16:00–20:00. Drawn as the BACK-MOST
+//   tint (8% alpha) so candles/indicators render on top.
+const SESSION_WINDOWS = [
+  { start: 240, end: 570,  color: OVERLAY.preMarket },  // 04:00–09:30 ET
+  { start: 960, end: 1200, color: OVERLAY.postMarket }, // 16:00–20:00 ET
+] as const
+
+function drawSessionBackgrounds(c: CanvasRenderingContext2D, f: number, t: number): void {
+  if (!props.overlays?.sessions) return
+  const bars = props.bars
+  c.save()
+  c.globalAlpha = 0.08
+  for (let i = f; i <= t; i++) {
+    const d = etDate(bars[i]!.time * 1000)
+    const etMin = d.getUTCHours() * 60 + d.getUTCMinutes()
+    for (const w of SESSION_WINDOWS) {
+      if (etMin >= w.start && etMin < w.end) {
+        c.fillStyle = w.color
+        const x0 = barToX(i)
+        const x1 = barToX(i + 1)
+        c.fillRect(x0, 0, x1 - x0, plH)
+        break
+      }
+    }
+  }
+  c.restore()
+}
+
+/** Draw a dotted blue vertical line at the start (open) of each ET trading day. */
+function drawDayStarts(c: CanvasRenderingContext2D, f: number, t: number): void {
+  if (!props.overlays?.dayStart) return
+  const bars = props.bars
+  c.save()
+  c.strokeStyle = OVERLAY.dayStart
+  c.lineWidth   = 1
+  c.setLineDash([2, 3])
+  c.globalAlpha = 0.85
+  c.beginPath()
+  for (let i = f; i <= t; i++) {
+    const cur = bars[i]!
+    // A new ET day begins at bars[i] when its day key differs from the previous
+    // bar's (i - 1 may be off-screen but still exists in the loaded series).
+    const prev = i > 0 ? bars[i - 1] : undefined
+    if (prev && etDayKeyMs(cur.time * 1000) === etDayKeyMs(prev.time * 1000)) continue
+    // Draw at the LEFT edge of the day's first bar (the boundary instant).
+    const x = barToX(i)
+    if (x < 0 || x > plW) continue
+    c.moveTo(x, 0)
+    c.lineTo(x, plH)
+  }
+  c.stroke()
+  c.restore()
+}
+
 /** Volume histogram at the bottom of the price pane (scaled to the series max). */
 function drawVolume(c: CanvasRenderingContext2D, f: number, t: number, slotW: number): void {
   if (!props.overlays?.volume || volH <= 0) return
@@ -568,6 +643,9 @@ function drawBars(): void {
   const bodyW = Math.max(1, Math.min(slotW * 0.6, slotW - 1))
   const wickW = 1
 
+  // Back-most layer: pre/post-market background tint (behind everything)
+  drawSessionBackgrounds(c, f, t)
+
   // Volume bars first (under the candles)
   drawVolume(c, f, t, slotW)
 
@@ -618,6 +696,9 @@ function drawBars(): void {
   if (ov?.ema20)  drawOverlayLine(c, 'ema20', OVERLAY.ema20, f, t)
   if (ov?.ema200) drawOverlayLine(c, 'ema200',OVERLAY.ema200,f, t)
   if (ov?.vwap)   drawOverlayLine(c, 'vwap',  OVERLAY.vwap,  f, t)
+
+  // Day start dividers (dotted blue vertical lines at each ET day open)
+  drawDayStarts(c, f, t)
 
   // Bar markers (Strat bar-type labels)
   if (props.markers.length) {
@@ -1104,6 +1185,13 @@ function atRightEdge(): boolean {
   return vTo >= rightEdgeIndex(range) - 1.5
 }
 
+/** True when the viewport is panned to the left-most loaded candle. */
+function atLeftEdge(): boolean {
+  const n = props.bars.length
+  if (!n) return false
+  return vFrom <= 0.6
+}
+
 /** Right-edge bar index for a given visible range, keeping a constant pixel margin. */
 function rightEdgeIndex(range: number): number {
   return (props.bars.length - 0.5) + CANDLE_HALF_BODY_SLOTS + RIGHT_GAP_FRAC * range
@@ -1112,6 +1200,9 @@ function rightEdgeIndex(range: number): number {
 /** Reflect whether the user has scrolled off the live (right-most) candle. */
 function updateSnapFlag(): void {
   canSnapToLatest.value = props.bars.length > 0 && !atRightEdge()
+  // Keep the button visible while loading (it shows a spinner); only hide it
+  // once the left edge is exhausted. Clicks are blocked in onLoadMore while busy.
+  canLoadMore.value      = props.bars.length > 0 && atLeftEdge() && !props.loadMoreExhausted
 }
 
 /** Jump to the right-most candle, PRESERVING the current zoom and the fixed right margin. */
@@ -1123,6 +1214,13 @@ function snapToLatest(): void {
   vFrom = Math.max(0, vTo - range)
   schedule(2)
   updateSnapFlag()
+}
+
+/** Emit a "load older candles" request anchored at the panel's left-most bar.
+ *  The parent decides the per-timeframe page size; we only report `before`. */
+function onLoadMore(): void {
+  if (props.loadMoreBusy || props.loadMoreExhausted || !props.bars.length) return
+  emit('load-more', { before: props.bars[0]!.time * 1000 })
 }
 
 /** Start a vertical-scale drag on the right price gutter (disables auto-fit). */
@@ -1700,20 +1798,22 @@ function niceStepInt(raw: number): number {
   return Math.max(1, Math.round(niceStep(Math.max(raw, 0.5))))
 }
 
-// Binary search — find bar index with time closest to target
+// Binary search — find the bar whose candle actually contains `time`. Every bar
+// is stamped by its PERIOD START (open), so the containing candle is the LAST bar
+// whose open <= time. We must NOT use nearest-time: a synced time past the
+// midpoint of a higher-TF candle (e.g. 10:02:50 on the 1m/5m pane) would
+// otherwise snap FORWARD to the next bar's open (10:03 / 10:05) instead of
+// staying on the candle that currently covers 10:02:50.
 function findBarByTime(time: number): number {
   const bars = props.bars
   if (!bars.length) return -1
-  let lo = 0, hi = bars.length - 1
-  while (lo < hi) {
+  let lo = 0, hi = bars.length - 1, res = 0
+  while (lo <= hi) {
     const mid = (lo + hi) >> 1
-    if (bars[mid]!.time < time) lo = mid + 1
-    else hi = mid
+    if (bars[mid]!.time <= time) { res = mid; lo = mid + 1 }
+    else hi = mid - 1
   }
-  if (lo > 0 && Math.abs(bars[lo - 1]!.time - time) < Math.abs(bars[lo]!.time - time)) {
-    return lo - 1
-  }
-  return lo
+  return res
 }
 
 // ── Context menu ─────────────────────────────────────────────────────────────
@@ -1769,16 +1869,41 @@ function onKeyCtrl(e: KeyboardEvent): void {
   if (isHovered && activeTool.value === 'horizontal-line') schedule(1)
 }
 
+// Tracks the previous first-bar timestamp so a "load more" PREPEND (older bars
+// added to the left) is detected and the viewport is shifted to keep the same
+// candles under the cursor instead of jumping.
+let firstTimePrev = 0
+
 // Bars: keep viewport if already at right edge (follow live candle),
 // otherwise keep the current pan position and just redraw.
 watch(() => props.bars, () => {
-  if (!props.bars.length) return
+  if (!props.bars.length) { firstTimePrev = 0; return }
   // Cold start: bars arrived after mount and the viewport was never set — snap
   // straight to the latest so the chart opens on the live candle (not the oldest).
   if (vFrom === 0 && vTo === 0) {
     resetView()
+    firstTimePrev = props.bars[0]!.time
     return
   }
+  // Prepend (load more): new first bar is older than the previous first bar —
+  // shift the viewport forward by the added count so the window stays put.
+  if (firstTimePrev !== 0 && props.bars[0]!.time < firstTimePrev) {
+    let prepended = 0
+    for (let i = 0; i < props.bars.length; i++) {
+      if (props.bars[i]!.time < firstTimePrev) prepended++
+      else break
+    }
+    if (prepended > 0) {
+      vFrom += prepended
+      vTo   += prepended
+      computePriceRange()
+      firstTimePrev = props.bars[0]!.time
+      updateSnapFlag()
+      schedule(2)
+      return
+    }
+  }
+  firstTimePrev = props.bars[0]!.time
   if (atRightEdge()) {
     const range = vTo - vFrom
     vTo   = rightEdgeIndex(range)
@@ -1789,6 +1914,10 @@ watch(() => props.bars, () => {
 })
 
 watch(() => props.markers, () => schedule(2), { deep: false })
+
+// Load-more busy/exhausted flags come from the parent — recompute the button
+// visibility so it re-appears when a fetch completes and hides when exhausted.
+watch([() => props.loadMoreBusy, () => props.loadMoreExhausted], () => updateSnapFlag())
 
 // Overlay toggles change the pane layout (MACD pane height, volume region).
 watch(() => props.overlays, () => {
@@ -1869,6 +1998,27 @@ watch(selectedDrawingId, () => schedule(1))
         <path d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z" fill="currentColor" />
       </svg>
     </button>
+
+    <!-- Load older candles: appears when the view is panned to the left-most
+         loaded candle. Clicking emits 'load-more' so the parent fetches older
+         bars and prepends them. -->
+    <button
+      v-if="canLoadMore"
+      class="pc-loadmore"
+      :class="{ busy: loadMoreBusy }"
+      title="Load older candles"
+      aria-label="Load older candles"
+      @mousemove.stop
+      @mousedown.stop
+      @click.stop.prevent="onLoadMore"
+    >
+      <svg v-if="!loadMoreBusy" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <path d="M15.41 16.59 10.83 12l4.58-4.59L14 6l-6 6 6 6z" fill="currentColor" />
+      </svg>
+      <svg v-else viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="pc-spin">
+        <path d="M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z" fill="currentColor" />
+      </svg>
+    </button>
   </div>
 </template>
 
@@ -1905,6 +2055,37 @@ watch(selectedDrawingId, () => schedule(1))
   transition:    background 0.15s ease, transform 0.15s ease;
 }
 .pc-snap:hover { background: #374151; transform: scale(1.08); }
+
+/* Floating "load older candles" — mirrors .pc-snap on the LEFT edge of the plot
+   area (no price gutter over there), just above the time axis. */
+.pc-loadmore {
+  position:      absolute;
+  bottom:        24px;
+  left:         10px;
+  width:         28px;
+  height:        28px;
+  display:       flex;
+  align-items:   center;
+  justify-content: center;
+  padding:       0;
+  border:        1px solid var(--pc-primary, #ff9800);
+  border-radius: 50%;
+  background:    #4b5563;
+  color:         var(--pc-primary, #ff9800);
+  cursor:        pointer;
+  box-shadow:    0 2px 8px rgba(0, 0, 0, 0.45);
+  z-index:       6;
+  transition:    background 0.15s ease, transform 0.15s ease;
+}
+.pc-loadmore:hover:not(.busy) { background: #374151; transform: scale(1.08); }
+.pc-loadmore.busy {
+  cursor:     default;
+  opacity:    0.85;
+}
+.pc-loadmore.busy:hover { transform: none; }
+
+.pc-spin { animation: pc-spin 0.9s linear infinite; }
+@keyframes pc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .pc-layer {
   position: absolute;

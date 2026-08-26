@@ -5,6 +5,7 @@ import type { BarInput } from '../database/repositories/market-data-repository';
 import { decryptJsonFields } from '../utils/encryption';
 import { getMetrics } from './metrics';
 import { getCandleCache } from './candle-cache';
+import { enrichBarSeries } from './indicator-enrich.service';
 import { daysAgoEt, todayEt, yesterdayEt } from '../utils/et-time';
 import { EMA_WARMUP_BARS } from '../../app/utils/indicators';
 
@@ -181,11 +182,26 @@ export async function validateConnection(): Promise<{ valid: boolean; message: s
   }
 }
 
+// Provider `t` for 10-second bars is not epoch-aligned — Massive labels each
+// bar a few seconds INTO its window (e.g. :08 instead of :00, :18 instead of
+// :10 — consistently `t % 10000 == 8000`). Bars are still exactly 10s apart.
+// We snap each bar back to the 10-second window that CONTAINS it (floor), which
+// is the same epoch-aligned start the live WS accumulator uses
+// (floor(tick.s/10000)*10000). This makes the chart axis / crosshair labels
+// round again and lets REST-seeded bars dedupe against the live buckets (they
+// land on the identical timestamps). NEVER use round here — round would shift
+// every bar one window forward (e.g. :08 -> :10), misaligning against the live
+// bars and creating doubled/overlapping candles.
+const TEN_SEC_MS = 10_000;
+function alignTenSecTimestamp(ts: number): number {
+  return Math.floor(ts / TEN_SEC_MS) * TEN_SEC_MS;
+}
+
 function mapBar(ticker: string, timespan: string, bar: MassiveBar): BarInput {
   return {
     ticker,
     timespan,
-    timestamp: bar.t ?? 0,
+    timestamp: timespan === '10s' ? alignTenSecTimestamp(bar.t ?? 0) : (bar.t ?? 0),
     open: bar.o ?? 0,
     high: bar.h ?? 0,
     low: bar.l ?? 0,
@@ -440,7 +456,7 @@ function mapRowToBar(row: MarketDataRow): BarInput {
   return {
     ticker: row.Ticker,
     timespan: row.Timespan,
-    timestamp: row.Timestamp,
+    timestamp: row.Timespan === '10s' ? alignTenSecTimestamp(row.Timestamp) : row.Timestamp,
     open: row.Open,
     high: row.High,
     low: row.Low,
@@ -507,6 +523,39 @@ export const invalidateTenSecondPruneCache = tenSecPrune.invalidate;
 
 /** Maximum 10s bars kept per symbol in the in-memory buffer (~75 min). */
 export const TEN_SEC_BUFFER = 450;
+
+// ── Session-scoped prune-cutoff override (chart "load more") ───────────────────
+// The retention windows above hard-prune old bars (e.g. minute/5min older than
+// the intraday window, 10s older than ~2 h) whenever a series is re-synced. A
+// chart's "load more" fetches OLDER bars than those windows would normally keep,
+// so it requests a per-(ticker, timespan) override that PUSHES THE PRUNE CUTOFF
+// back for this process session only. Closing the chart clears it, restoring the
+// default retention window until the user again loads more candles.
+const pruneCutoffOverride = new Map<string, number>();   // `${ticker}:${timespan}` -> cutoffMs
+
+export function getPruneCutoffMs(ticker: string, timespan: string, defaultCutoffMs: number): number {
+  return pruneCutoffOverride.get(`${ticker}:${timespan}`) ?? defaultCutoffMs;
+}
+
+/** Extend the prune cutoff back to `cutoffMs` (keeps the loaded older bars). */
+export function extendPruneCutoff(ticker: string, timespan: string, cutoffMs: number): void {
+  const key = `${ticker}:${timespan}`;
+  const current = pruneCutoffOverride.get(key);
+  pruneCutoffOverride.set(key, current === undefined ? cutoffMs : Math.min(current, cutoffMs));
+}
+
+/** Clear a single series' override (a fresh chart load uses the default window). */
+export function clearPruneCutoff(ticker: string, timespan: string): void {
+  pruneCutoffOverride.delete(`${ticker}:${timespan}`);
+}
+
+/** Clear every timespan override for a symbol — called when its chart unwatches. */
+export function clearSymbolPruneCutoffs(ticker: string): void {
+  const prefix = `${ticker}:`;
+  for (const key of pruneCutoffOverride.keys()) {
+    if (key.startsWith(prefix)) pruneCutoffOverride.delete(key);
+  }
+}
 
 // ── Vwap backfill (one-time, lazy) ────────────────────────────────────────────
 // Rows written before the Vwap column existed have NULL Vwap, so the VWAP
@@ -616,7 +665,7 @@ export async function getOrSyncMinuteBars(ticker: string): Promise<BarInput[]> {
   // Prune expired bars first — BUT retain the EMA/MACD warm-up context that the
   // ET-calendar fetch overshoot produced before the display cut-off, so the
   // indicator layer can compute EMA(200) exactly (trimmed, not shown).
-  repo.pruneOlderThan(ticker, 'minute', cutoffMs - warmupMs('minute'));
+  repo.pruneOlderThan(ticker, 'minute', getPruneCutoffMs(ticker, 'minute', cutoffMs - warmupMs('minute')));
 
   const latestRow = repo.getLatestBar(ticker, 'minute');
   const latest = latestRow?.Timestamp ?? null;
@@ -677,7 +726,7 @@ export async function getOrSyncFiveMinuteBars(ticker: string): Promise<BarInput[
   const cutoffMs = cutoff.getTime();
 
   // Retain EMA/MACD warm-up context before the display cut-off (see minute).
-  repo.pruneOlderThan(ticker, '5min', cutoffMs - warmupMs('5min'));
+  repo.pruneOlderThan(ticker, '5min', getPruneCutoffMs(ticker, '5min', cutoffMs - warmupMs('5min')));
 
   const latestRow = repo.getLatestBar(ticker, '5min');
   const latest = latestRow?.Timestamp ?? null;
@@ -771,7 +820,7 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
   // L2: SQLite rolling window.
   const fromDb = repo.getBars(ticker, '10s', fromMs, now).map(mapRowToBar);
   if (fromDb.length >= MIN_TEN_SEC_HISTORY) {
-    repo.pruneOlderThan(ticker, '10s', now - getTenSecondPruneMs());
+    repo.pruneOlderThan(ticker, '10s', getPruneCutoffMs(ticker, '10s', now - getTenSecondPruneMs()));
     getCandleCache().set(ticker, '10s', fromDb);
     return { bars: fromDb, seeded: true };
   }
@@ -789,7 +838,7 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
     const bars = await fetchAggregates(ticker, 10, 'second', String(fromMs), String(now));
     if (bars.length > 0) {
       repo.upsertBars(bars);
-      repo.pruneOlderThan(ticker, '10s', now - getTenSecondPruneMs());
+      repo.pruneOlderThan(ticker, '10s', getPruneCutoffMs(ticker, '10s', now - getTenSecondPruneMs()));
       const bounded = bars.slice(-TEN_SEC_BUFFER);
       getCandleCache().set(ticker, '10s', bounded);
       if (!bars[bars.length - 1]!.vwap) markVwapBackfilled(ticker, '10s');
@@ -799,4 +848,74 @@ export async function getOrSyncTenSecondBars(ticker: string): Promise<TenSecondR
 
   return { bars: (cached && cached.length > 0) ? cached : fromDb, seeded: false };
   });
+}
+
+// ── Chart "load more" — fetch `count` bars OLDER than `beforeMs` ──────────────
+// Backfills the LEFT side of a chart pane on demand. Reads the range from the DB
+// while it is still inside the retention window (cheap, no provider call);
+// otherwise fetches the range from the provider, persists it and PUSHES THE PRUNE
+// CUTOFF back (extendPruneCutoff) so the re-sync cycle does not delete these older
+// bars while the chart is open. Returned bars carry exact indicators.
+const PANEL_PROVIDER: Record<string, { multiplier: number; timespan: string }> = {
+  day:    { multiplier: 1,  timespan: 'day' },
+  '5min': { multiplier: 5,  timespan: 'minute' },
+  minute: { multiplier: 1,  timespan: 'minute' },
+  '10s':  { multiplier: 10, timespan: 'second' },
+}
+
+export interface LoadMoreResult { bars: BarInput[]; hasMore: boolean }
+
+export async function loadOlderBars(
+  ticker: string,
+  appTimespan: string,
+  beforeMs: number,
+  count: number,
+): Promise<LoadMoreResult> {
+  const repo = new MarketDataRepository()
+  const period = barPeriodMs(appTimespan)
+  const countN = Math.max(1, Math.min(3000, Math.round(count)))
+  const to = beforeMs - period          // strict: strictly older than the current oldest bar
+
+  // A `count × period` CLOCK window can hold far fewer than `count` bars on
+  // sparse symbols (trading-day/trading-minute gaps). Widen the window backward
+  // up to WIDEN_LIMIT chunks until it collects `countN` bars.
+  let from = to - countN * period
+  let bars: BarInput[] = []
+  const WIDEN_LIMIT = 6
+  for (let i = 0; i < WIDEN_LIMIT && bars.length < countN; i++) {
+    bars = readCachedBars(ticker, appTimespan, from, to)
+    if (bars.length < countN) from -= countN * period
+  }
+
+  // Still short → the range is at/outside the retention boundary: pull a
+  // generous window from the provider and retain it for this chart's session.
+  if (bars.length < countN) {
+    const provider = PANEL_PROVIDER[appTimespan] ?? PANEL_PROVIDER.minute!
+    const wideFrom = from - countN * period * 4
+    try {
+      // The daily feed uses calendar-date strings; intraday feeds take raw
+      // epoch-ms strings.
+      const fromArg = appTimespan === 'day' ? new Date(wideFrom).toISOString().slice(0, 10) : String(wideFrom)
+      const toArg   = appTimespan === 'day' ? new Date(to).toISOString().slice(0, 10)       : String(to)
+      const pBars = await fetchAggregates(ticker, provider.multiplier, provider.timespan, fromArg, toArg)
+      if (pBars.length > 0) {
+        repo.upsertBars(pBars, 'IGNORE')
+        extendPruneCutoff(ticker, appTimespan, wideFrom)
+        // Merge with any DB bars already held (provider wins on equal timestamps),
+        // then keep the NEWEST `countN` (closest to the visible oldest bar).
+        const byTime = new Map<number, BarInput>()
+        for (const b of bars) byTime.set(b.timestamp, b)
+        for (const b of pBars) byTime.set(b.timestamp, b)
+        bars = [...byTime.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-countN)
+      }
+    } catch { /* non-critical — surface only what we already held */ }
+  }
+
+  if (bars.length === 0) return { bars: [], hasMore: false }
+
+  const enriched = enrichBarSeries(ticker, appTimespan, bars)
+  // Optimistic "more": the button stays alive while a page is returned and only
+  // hides once a load-more returns nothing (true data start). This avoids the
+  // daily panel's trading-vs-calendar-day sparseness falsely hiding the button.
+  return { bars: enriched, hasMore: true }
 }

@@ -8,9 +8,13 @@ const props = defineProps<{
   label:   string
   isDemo:  boolean
   overlays: ChartOverlays
+  maximized?: boolean
 }>()
 
-const emit = defineEmits<{ (e: 'toggle-overlay', id: OverlayId): void }>()
+const emit = defineEmits<{
+  (e: 'toggle-overlay', id: OverlayId): void
+  (e: 'maximize'): void
+}>()
 
 const copied = ref(false)
 let copyTimer: ReturnType<typeof setTimeout> | null = null
@@ -83,7 +87,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </template>
       </div>
     </div>
-    <span v-if="isDemo" class="demo-badge">DEMO</span>
+    <div class="header-right">
+      <span v-if="isDemo" class="demo-badge">DEMO</span>
+      <button
+        class="pc-maximize"
+        :title="maximized ? 'Restore chart' : 'Maximize chart'"
+        aria-label="Maximize or restore chart"
+        @click.stop="emit('maximize')"
+      >
+        <svg v-if="maximized" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
+          <path d="M9 9L9 4.5M9 9L4.5 9M9 9L3.75 3.75M9 15L9 19.5M9 15L4.5 15M9 15L3.75 20.25M15 9H19.5M15 9V4.5M15 9L20.25 3.75M15 15H19.5M15 15L15 19.5M15 15L20.25 20.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
+          <path d="M3.75 3.75V8.25M3.75 3.75H8.25M3.75 3.75L9 9M3.75 20.25V15.75M3.75 20.25H8.25M3.75 20.25L9 15M20.25 3.75L15.75 3.75M20.25 3.75V8.25M20.25 3.75L15 9M20.25 20.25H15.75M20.25 20.25V15.75M20.25 20.25L15 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    </div>
   </div>
 </template>
 
@@ -107,6 +126,35 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   gap:         7px;
   min-width:   0;
   flex-shrink: 1;
+}
+
+.header-right {
+  display:     flex;
+  align-items: center;
+  gap:         8px;
+  flex-shrink: 0;
+}
+
+.pc-maximize {
+  appearance:    none;
+  display:       flex;
+  align-items:   center;
+  justify-content: center;
+  border:        1px solid #33363d;
+  background:    #1f2128;
+  color:         #9ca3af;
+  width:         22px;
+  height:        22px;
+  padding:       0;
+  border-radius: 3px;
+  cursor:        pointer;
+  transition:    color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.pc-maximize:hover {
+  color:        #d1d4dc;
+  border-color: #4b5563;
+  background:   #24262d;
 }
 
 .symbol {

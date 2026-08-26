@@ -46,9 +46,33 @@ function panelIndex(key: Panel['key']): number {
   return PANELS.findIndex(p => p.key === key)
 }
 
+// Panel key → server app-timespan (for the load-more endpoint).
+const PANEL_TS: Partial<Record<Panel['key'], string>> = {
+  D: 'day', '5': '5min', '1': 'minute', '10s': '10s',
+}
+
+// "Load more" page size per panel — roughly the amount the panel opens with, so
+// each click adds a comparable chunk. The server widens its fetch window until it
+// collects this many bars (sparse symbols need a wider clock window). 10s/D are
+// small ephemeral/limited series; 1m/5m are big intraday series.
+const LOAD_MORE_PAGE: Partial<Record<Panel['key'], number>> = {
+  D: 400, '5': 2000, '1': 2000, '10s': 450,
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const loading    = ref(false)
 const refreshing = ref(false)
+
+// Per-panel "load older candles" state (session-scoped to this chart tab).
+const loadMoreBusy      = ref<Record<string, boolean>>({})
+const loadMoreExhausted = ref<Record<string, boolean>>({})
+
+// Which panel is currently maximized (fills the whole chart grid); null = quad view.
+const maximizedKey = ref<Panel['key'] | null>(null)
+
+function toggleMaximize(key: Panel['key']): void {
+  maximizedKey.value = maximizedKey.value === key ? null : key
+}
 
 // ── Weekly bar aggregation (client-side, from patched daily bars) ─────────────
 // Mirrors the server's aggregateToWeekly logic but operates on OHLCBar[] (time
@@ -181,18 +205,49 @@ async function fetchBars(): Promise<Record<string, OHLCBar[]>> {
 // `day {o,h,l,c}` (seeded from the market snapshot, kept live from WS ticks) —
 // no derivation from the 1-minute series. Indicator values are extended from the
 // previous closed daily bar so the overlay lines reach the right edge on load.
+//
+// During PRE-MARKET the snapshot's `day.o` (regular-session open) is still 0, so
+// the row has no `day` yet — but intraday bars already show today's pre-market
+// trades. We seed a forming today-candle from the LIVE price in that case (open
+// frozen at the first price seen) so the daily panel starts today's data too.
+interface DayOHL { o: number; h: number; l: number; c: number }
+
+function buildTodayBar(
+  day: DayOHL | undefined,
+  livePrice: number | undefined,
+  todaySec: number,
+  prev: OHLCBar | undefined,
+  vw?: number,
+  existingOpen?: number,
+): OHLCBar | null {
+  const live = (livePrice && livePrice > 0) ? livePrice : null
+  // Open = regular-session open once it exists; otherwise freeze at the first
+  // price observed (pre-market) so the candle doesn't drift with the live tick.
+  const open = (day && day.o > 0) ? day.o : (existingOpen || live || 0)
+  if (open <= 0) return null
+  const high  = Math.max(day?.h || 0, live || 0, open)
+  const low   = Math.min(day?.l ?? Infinity, live ?? Infinity, open)
+  const close = live ?? (day?.c) ?? open
+  if (!Number.isFinite(low) || low <= 0) return null
+  return { time: todaySec, open, high, low, close, ...extendIndicators(prev, close, vw) }
+}
+
 function todayBarFromRow(prev?: OHLCBar): OHLCBar | null {
-  const day = currentRow.value?.day
-  if (!day || day.o <= 0) return null
+  const row = currentRow.value
+  if (!row) return null
+  const live = row.last
+  if ((!row.day || row.day.o <= 0) && (!live || live <= 0)) return null
   const todaySec = todayEtSec(Math.floor(Date.now() / 1000))
-  return {
-    time: todaySec, open: day.o, high: day.h, low: day.l, close: day.c,
-    ...extendIndicators(prev, day.c, currentRow.value?.vw),
-  }
+  return buildTodayBar(row.day, live, todaySec, prev, row.vw)
 }
 
 // ── Build chart data ──────────────────────────────────────────────────────────
 async function buildCharts(): Promise<void> {
+  // Fresh symbol/chart load → reset per-panel load-more state to the default
+  // "load more available" until the user requests older candles again.
+  loadMoreBusy.value      = {}
+  loadMoreExhausted.value = {}
+  maximizedKey.value      = null
   setTabLoading(props.symbol, true)
   loading.value = true
 
@@ -342,18 +397,14 @@ watch(currentRow, (newRow) => {
 
     // D panel — today's candle comes from the row's session day {o,h,l,c}.
     if (panel.key === 'D') {
-      const day = newRow.day
-      if (day && day.o > 0) {
-        // Indicator values are extended from the previous CLOSED daily bar (the
-        // bar before today's) so the overlay lines stay live at the right edge.
-        const lb = arr[arr.length - 1]
-        const prev = lb && lb.time >= todaySec
-          ? (arr.length > 1 ? arr[arr.length - 2] : undefined)
-          : lb
-        const todayBar: OHLCBar = {
-          time: todaySec, open: day.o, high: day.h, low: day.l, close: livePrice,
-          ...extendIndicators(prev, livePrice, newRow.vw),
-        }
+      const lb = arr[arr.length - 1]
+      // Freeze the pre-market open once a today-candle already exists.
+      const existingOpen = lb && lb.time === todaySec ? lb.open : undefined
+      const prev = lb && lb.time >= todaySec
+        ? (arr.length > 1 ? arr[arr.length - 2] : undefined)
+        : lb
+      const todayBar = buildTodayBar(newRow.day, livePrice, todaySec, prev, newRow.vw, existingOpen)
+      if (todayBar) {
         if (!arr.length) {
           panelBars[idx]!.value = [todayBar]
         } else {
@@ -402,9 +453,9 @@ let unsubscribeBars: (() => void) | null = null
 
 onMounted(() => {
   unsubscribeBars = subscribeBars(applyBarsUpdate)
-  // Register as a chart watcher so the data layer keeps this symbol's series
-  // fresh on every new period and pushes the new candles here as events.
-  void $fetch('/api/scanner/chart-watch', { method: 'POST', body: { symbol: props.symbol, action: 'watch' } })
+  // The immediate symbol watcher registers the chart-watch (and for cold open
+  // the chart-watch endpoint seeds the fresh series). Bar subscription above
+  // receives the pushed candles as SSE events.
 })
 
 onUnmounted(() => {
@@ -424,8 +475,58 @@ async function handleRefresh(): Promise<void> {
   }
 }
 
-// Rebuild when symbol changes
-watch(() => props.symbol, buildCharts, { immediate: true })
+/**
+ * Load OLDER bars for one panel (the chart's left-edge "load more" button).
+ * Fetches the page from the data layer, prepends it to the panel series, and
+ * recomputes the strat markers. The busy/exhausted flags drive the button state.
+ */
+async function handleLoadMore(key: Panel['key'], payload: { before: number }): Promise<void> {
+  const idx = panelIndex(key)
+  if (idx === -1 || loadMoreBusy.value[key]) return
+  const timespan = PANEL_TS[key]
+  if (!timespan) return
+
+  loadMoreBusy.value = { ...loadMoreBusy.value, [key]: true }
+  try {
+    const page = LOAD_MORE_PAGE[key] ?? 1000
+    const data = await $fetch<{ bars: ApiBar[]; hasMore: boolean }>('/api/scanner/chart-bars-more', {
+      query: { symbol: props.symbol, timespan, before: payload.before, count: page },
+      timeout: 30_000,
+    })
+    const older = data.bars.map(toOHLC)
+    const cur   = panelBars[idx]!.value
+    if (older.length > 0) {
+      // Prepend older bars and de-duplicate by timestamp, keeping chronological order.
+      const byTime = new Map<number, OHLCBar>()
+      for (const b of older) byTime.set(b.time, b)
+      for (const b of cur)   byTime.set(b.time, b)
+      const merged = [...byTime.values()].sort((a, b) => a.time - b.time)
+      panelBars[idx]!.value    = merged
+      panelMarkers[idx]!.value = computeMarkers(merged)
+    }
+    loadMoreExhausted.value = { ...loadMoreExhausted.value, [key]: !data.hasMore }
+  } catch {
+    /* non-critical — keep current series; leave the button retryable */
+  } finally {
+    loadMoreBusy.value = { ...loadMoreBusy.value, [key]: false }
+  }
+}
+
+// Register / unregister the chart-watch + session prune overrides. Switching
+// symbols unwatches the OLD one (clearing its session "load more" prune override
+// so a fresh chart uses the default retention window) and watches the NEW one.
+function resyncWatch(oldSym?: string): void {
+  if (oldSym) {
+    void $fetch('/api/scanner/chart-watch', { method: 'POST', body: { symbol: oldSym, action: 'unwatch' } })
+  }
+  void $fetch('/api/scanner/chart-watch', { method: 'POST', body: { symbol: props.symbol, action: 'watch' } })
+}
+
+// Rebuild when symbol changes (immediate — also handles cold open).
+watch(() => props.symbol, (_sym, old) => {
+  resyncWatch(old as string | undefined)
+  buildCharts()
+}, { immediate: true })
 </script>
 
 <template>
@@ -434,11 +535,12 @@ watch(() => props.symbol, buildCharts, { immediate: true })
 
     <LoadingOverlay v-if="loading" :label="`Loading bars for ${symbol}\u2026`" />
 
-    <div v-else class="chart-grid">
+    <div v-else class="chart-grid" :class="{ 'is-maximized': maximizedKey !== null }">
       <PulseChartPanel
         v-for="(panel, i) in PANELS"
         :key="`${symbol}-${panel.key}`"
         class="chart-cell"
+        :class="{ maximized: maximizedKey === panel.key }"
         :symbol="symbol"
         :label="panel.label"
         :time-visible="panel.timeVisible"
@@ -446,6 +548,11 @@ watch(() => props.symbol, buildCharts, { immediate: true })
         :bars="panelBars[i]!.value"
         :markers="panelMarkers[i]!.value"
         :is-demo="false"
+        :load-more-busy="loadMoreBusy[panel.key]"
+        :load-more-exhausted="loadMoreExhausted[panel.key]"
+        :maximized="maximizedKey === panel.key"
+        @load-more="handleLoadMore(panel.key, $event)"
+        @maximize="toggleMaximize(panel.key)"
       />
     </div>
   </div>
@@ -475,5 +582,14 @@ watch(() => props.symbol, buildCharts, { immediate: true })
 .chart-cell {
   overflow:   hidden;
   min-height: 0;
+}
+
+/* Maximized chart fills the whole grid; the other three are hidden (kept mounted). */
+.chart-grid.is-maximized .chart-cell:not(.maximized) { display: none; }
+.chart-cell.maximized {
+  grid-column: 1 / -1;
+  grid-row:    1 / -1;
+  position:    relative;
+  z-index:     2;
 }
 </style>

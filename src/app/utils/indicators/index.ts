@@ -25,7 +25,7 @@ export { volumesOf, maxVolume, type VolumeInput } from './volume'
  */
 export const EMA_WARMUP_BARS = 200
 
-export type OverlayId = 'ema9' | 'ema20' | 'ema200' | 'vwap' | 'volume' | 'macd'
+export type OverlayId = 'ema9' | 'ema20' | 'ema200' | 'vwap' | 'volume' | 'macd' | 'dayStart' | 'sessions'
 
 /** Metadata for the toggleable overlay buttons (chart header) + rendering. */
 export interface OverlayMeta {
@@ -41,6 +41,8 @@ export const OVERLAY_META: OverlayMeta[] = [
   { id: 'ema200', label: 'EMA200',color: '#ab47bc' },
   { id: 'volume', label: 'VOL',   color: '#787b86' },
   { id: 'macd',   label: 'MACD',  color: '#2962ff' },
+  { id: 'dayStart', label: 'Day start', color: '#3b82f6' },
+  { id: 'sessions', label: 'Pre/Post Market', color: '#b45309' },
 ]
 
 /** Indicator values attached to a bar (all aligned to the bar index). */
